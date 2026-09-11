@@ -73,8 +73,8 @@ async def handle_user_message(user_id: int, text: str) -> str:
             contents=contents,
             config=_GENERATE_CONFIG,
         )
-    except Exception:
-        logger.exception("Gemini generate_content call failed (user_id=%s)", user_id)
+    except Exception as e:
+        logger.exception("Gemini generate_content call failed (user_id=%s)", user_id, e)
         return FALLBACK_ERROR_MESSAGE
 
     candidate = response.candidates[0] if response.candidates else None
