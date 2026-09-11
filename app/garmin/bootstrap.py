@@ -18,20 +18,20 @@ from app import database
 
 
 def _prompt_mfa() -> str:
-    print("\nGarmin vyžaduje MFA / 2FA kód.")
-    return input("Zadaj kód zo SMS alebo e-mailu: ").strip()
+    print("\nGarmin requires an MFA / 2FA code.")
+    return input("Enter the code from SMS or email: ").strip()
 
 
 async def main(telegram_id: int) -> None:
     email = input("Garmin email: ").strip()
-    password = getpass.getpass("Garmin heslo (nezobrazuje sa pri písaní): ")
+    password = getpass.getpass("Garmin password (hidden while typing): ")
 
-    print("Prihlasujem sa do Garmin Connect...")
+    print("Logging in to Garmin Connect...")
     client = Garmin(email, password, prompt_mfa=_prompt_mfa)
     try:
         client.login()
     except Exception as e:  # noqa: BLE001 - CLI entrypoint, report and exit cleanly
-        print(f"Prihlásenie zlyhalo: {e}")
+        print(f"Login failed: {e}")
         sys.exit(1)
 
     session_json = client.client.dumps()
@@ -41,23 +41,23 @@ async def main(telegram_id: int) -> None:
         await database.save_garmin_session(telegram_id, email, session_json)
     except Exception as e:  # noqa: BLE001 - CLI entrypoint, report and exit cleanly
         print(
-            f"Prihlásenie prebehlo, ale uloženie do DB zlyhalo: {e}\n"
-            f"Over, že telegram_id {telegram_id} existuje v auth_user."
+            f"Login succeeded, but saving to the DB failed: {e}\n"
+            f"Check that telegram_id {telegram_id} exists in auth_user."
         )
         sys.exit(1)
     finally:
         await database.disconnect()
 
     print(
-        f"\n✓ Garmin účet {email} je prepojený s telegram_id={telegram_id}.\n"
-        "Heslo nikde neostalo uložené - iba session token v DB."
+        f"\n✓ Garmin account {email} is linked to telegram_id={telegram_id}.\n"
+        "The password was never stored - only the session token, in the DB."
     )
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "telegram_id", type=int, help="Telegram user_id, ktorému sa má Garmin účet priradiť"
+        "telegram_id", type=int, help="Telegram user_id to link the Garmin account to"
     )
     args = parser.parse_args()
     asyncio.run(main(args.telegram_id))

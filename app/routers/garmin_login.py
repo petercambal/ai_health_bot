@@ -20,7 +20,7 @@ templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent.parent
 # there's no separate session/cookie auth layer here. Still re-checked against
 # auth_user in case access was revoked between the link being issued and used.
 
-_INVALID_LINK_ERROR = "Odkaz je neplatný alebo vypršal. Vypýtaj si nový cez /garmin_link v Telegrame."
+_INVALID_LINK_ERROR = "This link is invalid or has expired. Request a new one via /garmin_link in Telegram."
 
 
 async def _resolve_user_id(link_token: str) -> int | None:
@@ -65,7 +65,7 @@ async def garmin_login_submit(
             {
                 "stage": "password",
                 "link_token": link_token,
-                "error": "Prihlásenie zlyhalo. Skontroluj email a heslo a skús znova.",
+                "error": "Login failed. Check your email and password and try again.",
             },
         )
 
@@ -106,7 +106,7 @@ async def garmin_login_mfa(
                 "link_token": link_token,
                 "mfa_token": mfa_token,
                 "email": email,
-                "error": "Nesprávny kód alebo vypršala platnosť. Skús znova.",
+                "error": "Wrong code or it expired. Please try again.",
             },
         )
 

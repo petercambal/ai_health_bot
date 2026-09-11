@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
@@ -11,6 +12,7 @@ logger = logging.getLogger(__name__)
 
 RECORD_TYPE = "garmin_daily"
 INITIAL_BACKFILL_DAYS = 30
+MAX_RANGE_DAYS = 31
 
 
 class GarminAuthRequired(Exception):
@@ -127,7 +129,7 @@ def _build_digest(client: Garmin, day: date) -> dict:
     }
 
 
-def _login_blocking(session_json: str) -> tuple[Garmin, str]:
+def _login_blocking(session_json: str) -> Garmin:
     """Logs in using ONLY the stored session - never falls back to a password,
     since none is stored. Raises GarminAuthRequired if the session can't be used."""
     client = Garmin()
@@ -135,37 +137,82 @@ def _login_blocking(session_json: str) -> tuple[Garmin, str]:
         client.login(tokenstore=session_json)
     except Exception as e:
         raise GarminAuthRequired(
-            "Uložená Garmin session nie je platná. Treba znova spustiť bootstrap "
+            "The stored Garmin session is invalid. Please run the bootstrap again "
             "(`uv run python -m app.garmin.bootstrap <telegram_id>`)."
         ) from e
-    return client, client.client.dumps()
+    return client
 
 
-async def sync_day(user_id: int, day: date) -> dict:
+async def sync_range(user_id: int, start: date, end: date) -> dict[date, dict | None]:
+    """Logs into Garmin ONCE and syncs every day in [start, end] inclusive - a single
+    login shared across the whole range instead of one per day, which is both faster
+    and much friendlier to Garmin's per-IP rate limiting on a multi-day backfill.
+
+    Returns {day: digest} for days successfully stored, {day: None} for days whose
+    digest fetched fine but failed to persist. Raises GarminAuthRequired if the stored
+    session itself can't be used to log in at all (aborts before touching any day),
+    ValueError if the range exceeds MAX_RANGE_DAYS.
+    """
+    if start > end:
+        start, end = end, start
+
+    days = [start + timedelta(days=i) for i in range((end - start).days + 1)]
+    if len(days) > MAX_RANGE_DAYS:
+        raise ValueError(f"Range spans {len(days)} days, max is {MAX_RANGE_DAYS}.")
+
     session_json = await database.get_garmin_session(user_id)
     if session_json is None:
         raise GarminAuthRequired(
-            "Pre tohto používateľa nie je uložený žiadny Garmin účet. Spusti "
+            "No Garmin account is linked for this user. Run "
             "`uv run python -m app.garmin.bootstrap <telegram_id>`."
         )
 
-    def _blocking() -> tuple[dict, str]:
-        client, refreshed_session_json = _login_blocking(session_json)
-        digest = _build_digest(client, day)
-        return digest, refreshed_session_json
+    def _blocking() -> tuple[dict[date, dict], str]:
+        client = _login_blocking(session_json)
+        digests: dict[date, dict] = {}
+        for day in days:
+            digests[day] = _build_digest(client, day)
+            time.sleep(0.5)  # be gentle with Garmin's API, mirrors the original script
+        return digests, client.client.dumps()
 
-    digest, refreshed_session_json = await asyncio.to_thread(_blocking)
+    digests, refreshed_session_json = await asyncio.to_thread(_blocking)
 
     account_email = await database.get_garmin_email(user_id)
     await database.save_garmin_session(user_id, account_email, refreshed_session_json)
-    await database.replace_health_record_for_day(user_id, RECORD_TYPE, day, digest)
-    logger.info("Garmin sync complete for user_id=%s day=%s", user_id, day)
+
+    result: dict[date, dict | None] = {}
+    for day in days:
+        try:
+            await database.replace_health_record_for_day(user_id, RECORD_TYPE, day, digests[day])
+            result[day] = digests[day]
+        except Exception:
+            logger.exception("Failed to store Garmin digest for %s (user_id=%s)", day, user_id)
+            result[day] = None
+
+    ok_count = sum(1 for v in result.values() if v is not None)
+    logger.info(
+        "Garmin range sync for user_id=%s: %d/%d days ok (%s to %s)",
+        user_id,
+        ok_count,
+        len(days),
+        start,
+        end,
+    )
+    return result
+
+
+async def sync_day(user_id: int, day: date) -> dict:
+    result = await sync_range(user_id, day, day)
+    digest = result[day]
+    if digest is None:
+        raise RuntimeError(f"Failed to sync Garmin data for {day.isoformat()}")
     return digest
 
 
 async def sync_catch_up(user_id: int) -> list[date]:
-    """Syncs every day from the last synced date (exclusive) up to yesterday. If
-    nothing has ever been synced, backfills the last INITIAL_BACKFILL_DAYS days."""
+    """Syncs every day from the last synced date (exclusive) up to yesterday, capped
+    at MAX_RANGE_DAYS per call. If nothing has ever been synced, backfills the last
+    INITIAL_BACKFILL_DAYS days."""
     yesterday = datetime.now(UTC).date() - timedelta(days=1)
     last_synced = await database.get_last_synced_date(user_id, RECORD_TYPE)
 
@@ -177,8 +224,6 @@ async def sync_catch_up(user_id: int) -> list[date]:
     if start > yesterday:
         return []
 
-    days = [start + timedelta(days=i) for i in range((yesterday - start).days + 1)]
-    for day in days:
-        await sync_day(user_id, day)
-        await asyncio.sleep(0.5)  # be gentle with Garmin's API, mirrors the original script
-    return days
+    end = min(yesterday, start + timedelta(days=MAX_RANGE_DAYS - 1))
+    result = await sync_range(user_id, start, end)
+    return [d for d, v in result.items() if v is not None]

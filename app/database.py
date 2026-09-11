@@ -233,3 +233,51 @@ async def list_garmin_accounts() -> list[int]:
     pool = get_pool()
     rows = await pool.fetch("SELECT user_id FROM garmin_account")
     return [r["user_id"] for r in rows]
+
+
+async def log_token_usage(
+    user_id: int,
+    model: str,
+    prompt_tokens: int | None,
+    response_tokens: int | None,
+    total_tokens: int | None,
+) -> None:
+    pool = get_pool()
+    await pool.execute(
+        """
+        INSERT INTO token_usage (user_id, model, prompt_tokens, response_tokens, total_tokens)
+        VALUES ($1, $2, $3, $4, $5)
+        """,
+        user_id,
+        model,
+        prompt_tokens,
+        response_tokens,
+        total_tokens,
+    )
+
+
+async def get_token_usage_summary(user_id: int, year: int, month: int) -> list[dict]:
+    """Per-model token usage totals for one calendar month - a per-model breakdown
+    rather than one grand total, since cost is priced differently per model and the
+    user may have switched models (GEMINI_MODEL) partway through the month."""
+    pool = get_pool()
+    rows = await pool.fetch(
+        """
+        SELECT
+            model,
+            COALESCE(SUM(prompt_tokens), 0)::bigint AS prompt_tokens,
+            COALESCE(SUM(response_tokens), 0)::bigint AS response_tokens,
+            COALESCE(SUM(total_tokens), 0)::bigint AS total_tokens,
+            COUNT(*) AS call_count
+        FROM token_usage
+        WHERE user_id = $1
+          AND ts >= make_date($2, $3, 1)
+          AND ts < make_date($2, $3, 1) + INTERVAL '1 month'
+        GROUP BY model
+        ORDER BY model
+        """,
+        user_id,
+        year,
+        month,
+    )
+    return [dict(r) for r in rows]

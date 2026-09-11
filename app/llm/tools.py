@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field, ValidationError
 INSERT_HEALTH_RECORD = "insert_health_record"
 GET_HEALTH_RECORDS = "get_health_records"
 SYNC_GARMIN_DAY = "sync_garmin_day"
+SYNC_GARMIN_RANGE = "sync_garmin_range"
 
 
 class InsertHealthRecordArgs(BaseModel):
@@ -27,6 +28,13 @@ class SyncGarminDayArgs(BaseModel):
     """Validates arguments Gemini returns for the sync_garmin_day tool call."""
 
     date: str = Field(..., min_length=1, max_length=20)
+
+
+class SyncGarminRangeArgs(BaseModel):
+    """Validates arguments Gemini returns for the sync_garmin_range tool call."""
+
+    start_date: str = Field(..., min_length=1, max_length=20)
+    end_date: str = Field(..., min_length=1, max_length=20)
 
 
 def resolve_day(value: str) -> date | None:
@@ -107,6 +115,21 @@ _SYNC_GARMIN_SCHEMA = types.Schema(
     required=["date"],
 )
 
+_SYNC_GARMIN_RANGE_SCHEMA = types.Schema(
+    type=types.Type.OBJECT,
+    properties={
+        "start_date": types.Schema(
+            type=types.Type.STRING,
+            description="First day of the range: 'today', 'yesterday', or an ISO date YYYY-MM-DD.",
+        ),
+        "end_date": types.Schema(
+            type=types.Type.STRING,
+            description="Last day of the range (inclusive), same format as start_date.",
+        ),
+    },
+    required=["start_date", "end_date"],
+)
+
 GEMINI_TOOL = types.Tool(
     function_declarations=[
         types.FunctionDeclaration(
@@ -134,6 +157,16 @@ GEMINI_TOOL = types.Tool(
             ),
             parameters=_SYNC_GARMIN_SCHEMA,
         ),
+        types.FunctionDeclaration(
+            name=SYNC_GARMIN_RANGE,
+            description=(
+                "Fetch/refresh this user's Garmin Connect data for a range of days "
+                "(inclusive), up to 31 days at a time. Call this when the user asks "
+                "to sync, backfill, or initialize Garmin data for a period longer "
+                "than a single day, e.g. 'sync my garmin data for the last month'."
+            ),
+            parameters=_SYNC_GARMIN_RANGE_SCHEMA,
+        ),
     ]
 )
 
@@ -142,9 +175,11 @@ __all__ = [
     "GET_HEALTH_RECORDS",
     "INSERT_HEALTH_RECORD",
     "SYNC_GARMIN_DAY",
+    "SYNC_GARMIN_RANGE",
     "GetHealthRecordsArgs",
     "InsertHealthRecordArgs",
     "SyncGarminDayArgs",
+    "SyncGarminRangeArgs",
     "ValidationError",
     "resolve_day",
 ]

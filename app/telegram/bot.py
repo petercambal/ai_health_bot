@@ -1,4 +1,6 @@
 import logging
+import re
+from datetime import UTC, datetime
 
 from aiogram import Bot, Dispatcher, Router
 from aiogram.client.default import DefaultBotProperties
@@ -8,6 +10,7 @@ from aiogram.types import BotCommand, Message
 from app import database
 from app.config import settings
 from app.garmin.link_token import generate_link_token
+from app.llm import pricing as token_pricing
 from app.llm.service import handle_user_message
 
 logger = logging.getLogger(__name__)
@@ -17,10 +20,13 @@ dp = Dispatcher()
 router = Router()
 dp.include_router(router)
 
+_MONTH_ARG_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
+
 _COMMANDS = [
-    BotCommand(command="help", description="Ako bota používať"),
-    BotCommand(command="garmin_link", description="Prepojiť Garmin účet"),
-    BotCommand(command="system_prompt", description="Zobraziť/nastaviť/zmazať systémový prompt"),
+    BotCommand(command="help", description="How to use the bot"),
+    BotCommand(command="garmin_link", description="Link your Garmin account"),
+    BotCommand(command="system_prompt", description="View/set/clear the system prompt"),
+    BotCommand(command="tokens", description="Token usage and estimated cost for a month"),
 ]
 
 
@@ -31,7 +37,7 @@ async def _check_authorized(message: Message) -> int | None:
     telegram_id = message.from_user.id
     if not await database.is_authorized_user(telegram_id):
         logger.warning("Rejected message from unauthorized telegram_id=%s", telegram_id)
-        await message.answer("Nemáš prístup k tomuto botovi.")
+        await message.answer("You don't have access to this bot.")
         return None
 
     return telegram_id
@@ -45,7 +51,7 @@ async def on_garmin_link(message: Message) -> None:
 
     link_token = generate_link_token(telegram_id)
     url = f"{settings.telegram_webhook_base_url.rstrip('/')}/garmin-login?token={link_token}"
-    await message.answer(f"Prepoj svoj Garmin účet tu (odkaz platí 30 minút):\n{url}")
+    await message.answer(f"Link your Garmin account here (link valid for 30 minutes):\n{url}")
 
 
 @router.message(Command("system_prompt"))
@@ -59,23 +65,79 @@ async def on_system_prompt(message: Message, command: CommandObject) -> None:
     if not text:
         current = await database.get_system_prompt(telegram_id)
         if current:
-            await message.answer(f"Aktuálny systémový prompt:\n\n{current}")
+            await message.answer(f"Current system prompt:\n\n{current}")
         else:
             await message.answer(
-                "Systémový prompt nie je nastavený. Nastav ho takto:\n"
+                "No system prompt is set. Set one like this:\n"
                 "/system_prompt <text>\n\n"
-                "Napr: /system_prompt Si môj osobný kondičný tréner, mám 196 cm...\n\n"
-                "Zmaž ho príkazom: /system_prompt clear"
+                "E.g.: /system_prompt You are my personal fitness coach, I'm 196cm...\n\n"
+                "Clear it with: /system_prompt clear"
             )
         return
 
-    if text.lower() in {"clear", "reset", "vymazať", "vymazat"}:
+    if text.lower() in {"clear", "reset"}:
         await database.set_system_prompt(telegram_id, None)
-        await message.answer("Systémový prompt zmazaný.")
+        await message.answer("System prompt cleared.")
         return
 
     await database.set_system_prompt(telegram_id, text)
-    await message.answer("Systémový prompt uložený ✅ (platí od ďalšej správy)")
+    await message.answer("System prompt saved ✅ (applies from the next message)")
+
+
+@router.message(Command("tokens"))
+async def on_tokens(message: Message, command: CommandObject) -> None:
+    telegram_id = await _check_authorized(message)
+    if telegram_id is None:
+        return
+
+    arg = (command.args or "").strip()
+    if arg:
+        if not _MONTH_ARG_RE.match(arg):
+            await message.answer(
+                "Month format is YYYY-MM, e.g. /tokens 2026-08. Without an argument "
+                "I'll show the current month."
+            )
+            return
+        year, month = int(arg[:4]), int(arg[5:7])
+    else:
+        now = datetime.now(UTC)
+        year, month = now.year, now.month
+
+    rows = await database.get_token_usage_summary(telegram_id, year, month)
+    if not rows:
+        await message.answer(f"No usage recorded for {year}-{month:02d}.")
+        return
+
+    lines = [f"Token usage for {year}-{month:02d}:"]
+    total_calls = 0
+    total_tokens = 0
+    total_cost = 0.0
+    any_unknown_pricing = False
+
+    for row in rows:
+        cost = token_pricing.estimate_cost_usd(row["model"], row["prompt_tokens"], row["response_tokens"])
+        total_calls += row["call_count"]
+        total_tokens += row["total_tokens"]
+        if cost is None:
+            any_unknown_pricing = True
+            cost_str = "cost unknown"
+        else:
+            total_cost += cost
+            cost_str = f"${cost:.4f}"
+        lines.append(
+            f"• {row['model']}: {row['call_count']} calls, "
+            f"{row['prompt_tokens']} in + {row['response_tokens']} out = "
+            f"{row['total_tokens']} tokens, {cost_str}"
+        )
+
+    summary = f"\nTotal: {total_calls} calls, {total_tokens} tokens"
+    if total_cost > 0:
+        summary += f", estimated cost ${total_cost:.4f}"
+    if any_unknown_pricing:
+        summary += " (pricing unknown for some models)"
+    lines.append(summary)
+
+    await message.answer("\n".join(lines))
 
 
 @router.message(Command("help"))
@@ -85,14 +147,16 @@ async def on_help(message: Message) -> None:
         return
 
     await message.answer(
-        "Môžeš mi jednoducho napísať čokoľvek, napr.:\n"
-        "- 'Dnes som sa vážil, 88kg' - uložím to\n"
-        "- 'Aká bola moja váha za posledný mesiac?' - pozriem históriu\n"
-        "- 'Stiahni Garmin dáta za včera' - zosynchronizujem Garmin\n\n"
-        "Príkazy:\n"
-        "/garmin_link - prepojiť Garmin účet\n"
-        "/system_prompt <text> - nastaviť tvoju personu pre asistenta "
-        "(bez textu zobrazí aktuálnu, 'clear' ju zmaže)"
+        "You can just write me anything, e.g.:\n"
+        "- 'I weighed myself today, 88kg' - I'll save it\n"
+        "- 'What was my weight over the last month?' - I'll look up the history\n"
+        "- 'Sync Garmin data for yesterday' - I'll sync Garmin\n\n"
+        "Commands:\n"
+        "/garmin_link - link your Garmin account\n"
+        "/system_prompt <text> - set your assistant persona "
+        "(no text shows the current one, 'clear' removes it)\n"
+        "/tokens [YYYY-MM] - token usage and estimated cost for a month "
+        "(no argument means the current month)"
     )
 
 
@@ -103,7 +167,7 @@ async def on_message(message: Message) -> None:
         return
 
     if not message.text:
-        await message.answer("Zatiaľ viem spracovať iba textové správy.")
+        await message.answer("I can only process text messages for now.")
         return
 
     reply = await handle_user_message(user_id=telegram_id, text=message.text)

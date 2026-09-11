@@ -14,7 +14,7 @@ ALTER TABLE health_tracker.auth_user ADD COLUMN IF NOT EXISTS system_prompt TEXT
 
 CREATE TABLE IF NOT EXISTS health_tracker.health_records (
     id SERIAL PRIMARY KEY,
-    user_id BIGINT NOT NULL REFERENCES health_tracker.auth_user (id) ON DELETE CASCADE,
+    user_id BIGINT NOT NULL REFERENCES health_tracker.auth_user (telegram_id) ON DELETE CASCADE,
     ts TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     typ VARCHAR(50) NOT NULL,
     data JSONB NOT NULL
@@ -50,3 +50,19 @@ CREATE TABLE IF NOT EXISTS health_tracker.garmin_account (
     session_json TEXT NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- One row per Gemini API call (a single Telegram message can trigger two - the
+-- initial call, and a follow-up when get_health_records feeds data back to the
+-- model), for cost/usage auditing.
+CREATE TABLE IF NOT EXISTS health_tracker.token_usage (
+    id SERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL REFERENCES health_tracker.auth_user (telegram_id) ON DELETE CASCADE,
+    ts TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    model TEXT NOT NULL,
+    prompt_tokens INTEGER,
+    response_tokens INTEGER,
+    total_tokens INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_token_usage_user_ts
+    ON health_tracker.token_usage (user_id, ts DESC);

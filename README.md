@@ -83,6 +83,25 @@ Pozor: free ngrok URL sa mení pri každom reštarte tunela — ak tunel reštar
 `TELEGRAM_WEBHOOK_BASE_URL` a reštartni aj `uvicorn`, nech sa webhook prehlási na novú
 URL.
 
+### Automatizovane cez `scripts/dev_with_tunnel.sh`
+
+Kroky 2-4 vyššie robí za teba tento skript — reštartuje cloudflared tunel, počká na
+DNS resolúciu novej `trycloudflare.com` URL (cloudflared ju vypíše skôr, než je
+reálne dostupná — priamy `set_webhook` hneď po štarte by inak padal na "Failed to
+resolve host"), zapíše ju do `.env` a spustí appku:
+
+```bash
+./scripts/dev_with_tunnel.sh
+```
+
+Zámerne beží **bez** `--reload` — pri páde appky počas štartu (napr. práve tá DNS
+race) vie reloader proces prežiť a držať port 8000 obsadený aj po ukončení skriptu.
+Na PyCharm to vieš napojiť ako samostatnú **Shell Script** run konfiguráciu
+(Script path: `scripts/dev_with_tunnel.sh`) — Start spustí celý flow, Stop pošle
+`SIGTERM` a skript korektne ukončí aj appku aj tunel (žiadny osamotený proces).
+Pôvodnú Start/Debug konfiguráciu s `--reload` nechaj bokom pre rýchle iterovanie kódu
+bez tunela.
+
 ## Autorizácia používateľov (`auth_user`)
 
 Bot odpovie iba `telegram_id`, ktoré je v tabuľke `auth_user` a má `is_active = TRUE`;
@@ -147,7 +166,32 @@ nič neduplikuje.
 **Cron** o 09:00 (`app/scheduler.py`) prebehne všetkých používateľov s riadkom v
 `garmin_account` a pre každého dobehne (catch-up) všetky dni od posledného
 synchronizovaného dňa po **včerajšok** (dnešok o 9:00 by bol ešte neúplný, napr.
-spánok cez noc).
+spánok cez noc), max `MAX_RANGE_DAYS` (31) dní za jeden beh — pri dlhšom výpadku sa
+dobehne postupne cez viacero dní/cronov, nie v jednom veľkom nápore.
+
+**Rozsah dní naraz** — popri `sync_garmin_day` (jeden deň) existuje aj
+`sync_garmin_range` (`start_date`, `end_date`, max **31 dní** naraz,
+`app/garmin/sync.py`), na inicializáciu histórie bez ručného volania po dňoch. V
+Telegrame stačí napr. "stiahni Garmin dáta od 1.8. do 31.8." — Gemini zvolí správny
+nástroj. Oba nástroje aj `sync_catch_up` teraz zdieľajú jednu funkciu
+(`sync_range()`), ktorá sa do Garminu prihlási **raz** pre celý rozsah (nie raz na
+deň ako predtým) — rýchlejšie a menej náchylné na Garmin rate-limiting.
+
+## Token usage audit (`token_usage`)
+
+Každé volanie Gemini API (jedna Telegram správa môže spustiť dve — pôvodné a
+follow-up, keď `get_health_records` vracia dáta späť modelu) sa zaloguje do
+`health_tracker.token_usage`: `user_id`, čas, model, `prompt_tokens`,
+`response_tokens`, `total_tokens` (`app/llm/service.py` → `_log_usage()`,
+best-effort — zlyhanie logovania nikdy nezhodí samotnú odpoveď bota).
+
+**`/tokens [RRRR-MM]`** v Telegrame ukáže mesačný súhrn (bez argumentu aktuálny
+mesiac) — počet volaní, tokeny a odhad ceny v USD podľa `app/llm/pricing.py`
+(hand-maintained cenník USD/1M tokenov, overený 2026-09-11 na
+ai.google.dev/gemini-api/docs/pricing — Gemini cenník sa mení a API ho nevystavuje,
+takže pri zmene modelu/cien treba tabuľku ručne doplniť). Súhrn je rozpísaný
+per-model, keby si `GEMINI_MODEL` počas mesiaca zmenil; neznámy model v tabuľke
+ukáže tokeny bez ceny namiesto tichého nesprávneho súčtu.
 
 ## Persona / system instructions (`/system_prompt`)
 

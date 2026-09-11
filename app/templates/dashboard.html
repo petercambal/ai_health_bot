@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="sk">
+<html lang="en">
 <head>
   <meta charset="UTF-8" />
   <title>Health Tracker Dashboard</title>
@@ -19,7 +19,7 @@
 
   <div class="controls">
     <label>
-      Typ:
+      Type:
       <select id="typ-select">
         {% for t in available_types %}
         <option value="{{ t }}" {% if t == selected_typ %}selected{% endif %}>{{ t }}</option>
@@ -41,7 +41,7 @@
 
   <div class="card" style="margin-top:1.5rem;">
     <table id="records-table">
-      <thead><tr><th>Čas</th><th>Dáta</th></tr></thead>
+      <thead><tr><th>Time</th><th>Data</th></tr></thead>
       <tbody></tbody>
     </table>
   </div>
