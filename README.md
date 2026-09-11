@@ -14,11 +14,43 @@ calling) → PostgreSQL, plus jednoduchý FastAPI/Jinja2 dashboard s Chart.js.
 - `app/scheduler.py` — `AsyncIOScheduler`, dummy denná úloha `sync_garmin_data` o 03:00
 - `db/init.sql` — DDL pre `auth_user` a `health_records`
 
+## Databáza
+
+Všetky tabuľky žijú vo vlastnej Postgres schéme **`health_tracker`** (nie `public`) —
+DB na NASe je zdieľaná s inými projektmi, takto sa vyhneme kolízii názvov tabuliek.
+Schéma sa nastavuje ako `server_settings={"search_path": ...}` pri vytváraní
+`asyncpg` poolu (`app/database.py`, `SCHEMA` konštanta) — **nie** cez obyčajný
+`SET search_path`, lebo ten by asyncpg po vrátení spojenia do poolu vždy vynuloval
+príkazom `RESET ALL`. Meno schémy musí byť zhodné v `db/init.sql` aj `app/database.py`.
+
+Appka defaultne očakáva **existujúce** PostgreSQL na NASe (nie lokálny kontajner) —
+`docker-compose.yml` už nespúšťa vlastné Postgres, len appku. `DATABASE_URL` v `.env`
+smeruje priamo tam:
+
+```
+DATABASE_URL=postgresql://<user>:<password>@192.168.1.229:15432/<dbname>
+```
+
+Pred prvým spustením treba na tejto DB jednorazovo vytvoriť tabuľky z
+[db/init.sql](db/init.sql) (obsahuje `CREATE TABLE IF NOT EXISTS`, takže sa dá pustiť
+opakovane bez rizika):
+
+```bash
+psql "postgresql://<user>:<password>@192.168.1.229:15432/<dbname>" -f db/init.sql
+```
+
+Ak by si niekedy potreboval lokálny Postgres (napr. vývoj mimo NAS siete), je
+pripravený ako voliteľný profil, nespúšťa sa defaultne:
+
+```bash
+docker compose --profile local-db up -d db
+```
+
 ## Lokálny beh
 
 1. `cp .env.example .env` a doplň `TELEGRAM_BOT_TOKEN`, `GEMINI_API_KEY`,
-   `TELEGRAM_WEBHOOK_BASE_URL` (verejná HTTPS URL, napr. z ngrok/cloudflared) a
-   `TELEGRAM_WEBHOOK_SECRET`.
+   `TELEGRAM_WEBHOOK_BASE_URL` (verejná HTTPS URL, napr. z ngrok/cloudflared),
+   `TELEGRAM_WEBHOOK_SECRET` a `DATABASE_URL` (NAS DB, viď vyššie).
 2. `docker compose up --build`
 3. Dashboard: `http://localhost:8000/dashboard?user_id=<tvoje_telegram_id>`
 
@@ -29,22 +61,19 @@ uv sync
 uv run uvicorn app.main:app --reload
 ```
 
-Vyžaduje bežiace PostgreSQL a `DATABASE_URL` smerujúce naň (napr. `docker compose up db`).
-
 ## Lokálny vývoj s reálnym Telegram webhookom (bez rebuildu image)
 
 Na NASe pôjde appka za reverse proxy, ale kým vyvíjaš lokálne, nemusíš pri každej
 zmene stavať Docker image — appka beží natívne s `--reload` a webhook ide cez tunel:
 
-1. Nahoď iba databázu: `docker compose up -d db`
-2. `.env` musí mať `DATABASE_URL=postgresql://health:health@localhost:5432/health_tracker`
-   (appka teraz beží mimo Docker siete, takže `localhost`, nie `db`).
-3. Spusti tunel, napr. `ngrok http 8000` (alebo `cloudflared tunnel --url http://localhost:8000`).
+1. `.env` má `DATABASE_URL` smerujúce priamo na NAS DB (`192.168.1.229:15432`) — platí
+   to isté, či appku spúšťaš cez Docker alebo natívne, žiadna zmena netreba.
+2. Spusti tunel, napr. `ngrok http 8000` (alebo `cloudflared tunnel --url http://localhost:8000`).
    Dostaneš HTTPS URL typu `https://abc123.ngrok-free.app`.
-4. Daj túto URL do `.env` ako `TELEGRAM_WEBHOOK_BASE_URL`.
-5. Spusti appku: `uv run uvicorn app.main:app --reload` — pri štarte sa webhook
+3. Daj túto URL do `.env` ako `TELEGRAM_WEBHOOK_BASE_URL`.
+4. Spusti appku: `uv run uvicorn app.main:app --reload` — pri štarte sa webhook
    zaregistruje na Telegrame s touto URL.
-6. Píš botovi v Telegrame — správy chodia cez tunel na tvoj lokálny bežiaci proces;
+5. Píš botovi v Telegrame — správy chodia cez tunel na tvoj lokálny bežiaci proces;
    `--reload` zachytí každú zmenu kódu bez reštartu appky (netreba ani reštart kvôli
    webhooku, ten sa registruje len raz pri štarte procesu).
 

@@ -10,6 +10,10 @@ logger = logging.getLogger(__name__)
 
 _pool: asyncpg.Pool | None = None
 
+# Tables live in their own schema so this app can share a Postgres instance/DB with
+# other projects without name clashes. Must match the schema created in db/init.sql.
+SCHEMA = "health_tracker"
+
 
 async def _init_connection(conn: asyncpg.Connection) -> None:
     await conn.set_type_codec(
@@ -27,6 +31,9 @@ async def connect() -> None:
         min_size=1,
         max_size=10,
         init=_init_connection,
+        # Set as a startup parameter (not a plain SET) so it survives the RESET ALL
+        # asyncpg runs on every connection release back to the pool.
+        server_settings={"search_path": f"{SCHEMA},public"},
     )
     logger.info("Database pool created")
 

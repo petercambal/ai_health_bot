@@ -1,7 +1,11 @@
 services:
+  # Local Postgres, only for offline dev away from the NAS. Not started by default -
+  # the app connects to the existing NAS Postgres via DATABASE_URL in .env instead.
+  # Run with: docker compose --profile local-db up
   db:
     image: postgres:16-alpine
     restart: unless-stopped
+    profiles: ["local-db"]
     environment:
       POSTGRES_USER: health
       POSTGRES_PASSWORD: health
@@ -22,13 +26,8 @@ services:
     restart: unless-stopped
     env_file:
       - .env
-    environment:
-      DATABASE_URL: postgresql://health:health@db:5432/health_tracker
     ports:
       - "8000:8000"
-    depends_on:
-      db:
-        condition: service_healthy
 
 volumes:
   db_data:

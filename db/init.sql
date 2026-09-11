@@ -1,4 +1,6 @@
-CREATE TABLE IF NOT EXISTS auth_user (
+CREATE SCHEMA IF NOT EXISTS health_tracker;
+
+CREATE TABLE IF NOT EXISTS health_tracker.auth_user (
     id SERIAL PRIMARY KEY,
     telegram_id BIGINT NOT NULL UNIQUE,
     display_name TEXT,
@@ -6,7 +8,7 @@ CREATE TABLE IF NOT EXISTS auth_user (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS health_records (
+CREATE TABLE IF NOT EXISTS health_tracker.health_records (
     id SERIAL PRIMARY KEY,
     user_id BIGINT NOT NULL,
     ts TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -15,4 +17,4 @@ CREATE TABLE IF NOT EXISTS health_records (
 );
 
 CREATE INDEX IF NOT EXISTS idx_health_user_typ_ts
-    ON health_records (user_id, typ, ts DESC);
+    ON health_tracker.health_records (user_id, typ, ts DESC);
