@@ -1,6 +1,6 @@
 import json
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import asyncpg
 
@@ -74,6 +74,24 @@ async def add_auth_user(telegram_id: int, display_name: str | None = None) -> No
     )
 
 
+async def get_system_prompt(user_id: int) -> str | None:
+    pool = get_pool()
+    row = await pool.fetchrow(
+        "SELECT system_prompt FROM auth_user WHERE telegram_id = $1",
+        user_id,
+    )
+    return row["system_prompt"] if row else None
+
+
+async def set_system_prompt(user_id: int, text: str | None) -> None:
+    pool = get_pool()
+    await pool.execute(
+        "UPDATE auth_user SET system_prompt = $1 WHERE telegram_id = $2",
+        text,
+        user_id,
+    )
+
+
 async def insert_health_record(
     user_id: int, typ: str, data: dict, ts: datetime | None = None
 ) -> int:
@@ -140,3 +158,78 @@ async def get_distinct_types(user_id: int) -> list[str]:
         user_id,
     )
     return [r["typ"] for r in rows]
+
+
+async def replace_health_record_for_day(user_id: int, typ: str, day: date, data: dict) -> None:
+    """Deletes any existing record(s) for this user/typ/day and inserts a fresh one.
+
+    Used for sources like Garmin where a day is a single evolving object, not an
+    append-only log - re-syncing a day should replace it, not accumulate duplicates.
+    """
+    pool = get_pool()
+    ts = datetime.combine(day, datetime.min.time(), tzinfo=UTC)
+    async with pool.acquire() as conn, conn.transaction():
+        await conn.execute(
+            "DELETE FROM health_records WHERE user_id = $1 AND typ = $2 AND ts::date = $3",
+            user_id,
+            typ,
+            day,
+        )
+        await conn.execute(
+            "INSERT INTO health_records (user_id, ts, typ, data) VALUES ($1, $2, $3, $4)",
+            user_id,
+            ts,
+            typ,
+            data,
+        )
+
+
+async def get_last_synced_date(user_id: int, typ: str) -> date | None:
+    pool = get_pool()
+    row = await pool.fetchrow(
+        "SELECT MAX(ts::date) AS d FROM health_records WHERE user_id = $1 AND typ = $2",
+        user_id,
+        typ,
+    )
+    return row["d"] if row else None
+
+
+async def get_garmin_session(user_id: int) -> str | None:
+    pool = get_pool()
+    row = await pool.fetchrow(
+        "SELECT session_json FROM garmin_account WHERE user_id = $1",
+        user_id,
+    )
+    return row["session_json"] if row else None
+
+
+async def get_garmin_email(user_id: int) -> str | None:
+    pool = get_pool()
+    row = await pool.fetchrow(
+        "SELECT garmin_email FROM garmin_account WHERE user_id = $1",
+        user_id,
+    )
+    return row["garmin_email"] if row else None
+
+
+async def save_garmin_session(user_id: int, garmin_email: str, session_json: str) -> None:
+    pool = get_pool()
+    await pool.execute(
+        """
+        INSERT INTO garmin_account (user_id, garmin_email, session_json, updated_at)
+        VALUES ($1, $2, $3, NOW())
+        ON CONFLICT (user_id) DO UPDATE SET
+            garmin_email = EXCLUDED.garmin_email,
+            session_json = EXCLUDED.session_json,
+            updated_at = NOW()
+        """,
+        user_id,
+        garmin_email,
+        session_json,
+    )
+
+
+async def list_garmin_accounts() -> list[int]:
+    pool = get_pool()
+    rows = await pool.fetch("SELECT user_id FROM garmin_account")
+    return [r["user_id"] for r in rows]

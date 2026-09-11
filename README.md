@@ -11,8 +11,10 @@ calling) → PostgreSQL, plus jednoduchý FastAPI/Jinja2 dashboard s Chart.js.
 - `app/llm/` — Gemini klient, tool schémy (`tools.py`), routovacia logika (`service.py`)
 - `app/telegram/` — aiogram `Bot`/`Dispatcher` vo webhook móde, kontrola `auth_user`
 - `app/routers/` — `telegram.py` (webhook endpoint), `dashboard.py` (`/dashboard`, `/api/stats`)
-- `app/scheduler.py` — `AsyncIOScheduler`, dummy denná úloha `sync_garmin_data` o 03:00
-- `db/init.sql` — DDL pre `auth_user` a `health_records`
+- `app/garmin/` — `sync.py` (sťahovanie a ukladanie denného Garmin digestu, catch-up),
+  `bootstrap.py` (jednorazové interaktívne prihlásenie)
+- `app/scheduler.py` — `AsyncIOScheduler`, denná úloha `sync_garmin_data` o 09:00
+- `db/init.sql` — DDL pre `auth_user`, `health_records`, `garmin_account`
 
 ## Databáza
 
@@ -97,24 +99,75 @@ INSERT INTO auth_user (telegram_id, display_name) VALUES (123456789, 'Peter');
 
 alebo programaticky cez `app.database.add_auth_user(telegram_id, display_name)`.
 
-## Persona / system instructions (`system_prompt.txt`)
+## Garmin Connect sync (`app/garmin/`)
 
-`app/llm/service.py` skladá `system_instruction` pre Gemini z dvoch častí:
+Tretí Gemini nástroj popri `insert_health_record`/`get_health_records`:
+`sync_garmin_day` — keď napíšeš botovi napr. "stiahni Garmin dáta za včera", Gemini
+zavolá tento tool, appka stiahne dáta z Garmin Connect a uloží ich.
 
-1. pevná routing inštrukcia v kóde (`_ROUTING_INSTRUCTION`) — zaručuje, že fungujú tri
-   cesty: priama odpoveď / `insert_health_record` / `get_health_records`; needituj ju,
-   inak sa môže pokaziť tool-calling.
-2. `app/llm/system_prompt.txt` — voľný text s tvojou personou a profilom (napr. "Si môj
-   kondičný tréner, mám 196 cm, plán je 2x posilka..."), ktorý sa pripojí za routing
-   inštrukciu. Je v `.gitignore` (obsahuje osobné zdravotné údaje), takže priprav si
-   vlastný podľa šablóny:
+**Ako funguje autentifikácia** — heslo sa nikdy neukladá, ani do `.env`, ani do DB:
 
-```bash
-cp app/llm/system_prompt.example.txt app/llm/system_prompt.txt
+1. Jednorazovo, interaktívne (kvôli MFA) spustíš pre každého používateľa/kamaráta:
+   ```bash
+   uv run python -m app.garmin.bootstrap <telegram_id>
+   ```
+   Vypýta si Garmin email/heslo/MFA kód priamo v termináli, prihlási sa, a do
+   tabuľky `garmin_account` (naviazanej na `auth_user.telegram_id`) uloží **iba**
+   serializovaný session token (`garminconnect`'s `client.dumps()`/`loads()`) —
+   heslo skončí len v pamäti tohto jedného behu skriptu a nikam sa nezapíše.
+2. Odvtedy `sync_day()`/`sync_catch_up()` (`app/garmin/sync.py`) session z DB
+   načítajú a prihlásia sa ňou (`Garmin().login(tokenstore=session_json)`) — bez
+   hesla, bez MFA. Po každom behu sa (prípadne obnovený/refreshnutý) token uloží
+   späť do DB.
+3. Ak token prestane platiť (napr. dlhodobo nepoužívaný refresh token), appka
+   vráti jasnú chybu s inštrukciou znova spustiť bootstrap — nikdy sa sama
+   nepokúsi prihlásiť menom/heslom (žiadne heslo nemá k dispozícii).
+
+Tento dizajn prirodzene podporuje viac ľudí: každý kamarát má vlastný riadok v
+`garmin_account`, vlastný Garmin účet, vlastnú históriu v `health_records`
+(`typ='garmin_daily'`).
+
+**Prepojenie cez web namiesto terminálu** — pre kohokoľvek bez prístupu k
+terminálu (napr. kamaráti) existuje aj webový flow: napíš botovi v Telegrame
+`/garmin_link` a dostaneš späť odkaz na `/garmin-login?token=...`
+(`app/routers/garmin_login.py`). Token je podpísaný HMAC-om (`app/garmin/link_token.py`,
+kľúč = `TELEGRAM_WEBHOOK_SECRET`), viazaný na tvoje `telegram_id` a platí 30 minút —
+appka teda nikde nevystavuje surové `user_id` v URL, ktoré by niekto mohol uhádnuť
+alebo použiť pre cudzí účet. Formulár prevedie cez email/heslo a prípadný MFA krok
+presne tak ako CLI bootstrap, a rovnako neukladá heslo, iba výsledný session token.
+
+**Denné dáta** sa ukladajú ako jeden JSONB "digest" objekt na deň (kroky,
+vzdialenosť, kalórie, tep, spánok, HRV, SpO2, body battery, tréningová
+pripravenosť, hydratácia, zoznam aktivít) — nie per-minútové intraday série ani
+lapy, aby záznam ostal kompaktný; dá sa ľahko rozšíriť, ak by si to chcel. Pri
+každom sync-i pre daný deň sa **existujúci záznam zmaže a nahradí** novým
+(`database.replace_health_record_for_day`), takže opakovaný sync toho istého dňa
+nič neduplikuje.
+
+**Cron** o 09:00 (`app/scheduler.py`) prebehne všetkých používateľov s riadkom v
+`garmin_account` a pre každého dobehne (catch-up) všetky dni od posledného
+synchronizovaného dňa po **včerajšok** (dnešok o 9:00 by bol ešte neúplný, napr.
+spánok cez noc).
+
+## Persona / system instructions (`/system_prompt`)
+
+`app/llm/service.py` skladá `system_instruction` pre Gemini z dvoch častí, per-request
+(`_build_config()`), nie raz pri štarte:
+
+1. pevná routing inštrukcia v kóde (`_ROUTING_INSTRUCTION`) — zaručuje, že fungujú
+   štyri cesty: priama odpoveď / `insert_health_record` / `get_health_records` /
+   `sync_garmin_day`; needituj ju, inak sa môže pokaziť tool-calling.
+2. `auth_user.system_prompt` — voľný text s tvojou personou a profilom, per-používateľ,
+   uložený v DB. Nastavuje sa priamo v Telegrame:
+
+```
+/system_prompt Si môj osobný kondičný tréner, mám 196 cm, plán je 2x posilka...
+/system_prompt            (bez textu - zobrazí aktuálne nastavený prompt)
+/system_prompt clear      (zmaže ho)
 ```
 
-Zmena súboru sa prejaví po reštarte procesu (`docker compose up --build` / reštart
-uvicorn) — číta sa raz pri štarte, nie pri každej správe.
+Keďže sa `system_prompt` číta z DB pri každej správe, zmena sa prejaví okamžite —
+žiadny reštart appky netreba.
 
 ## CI/CD — GitHub Container Registry
 

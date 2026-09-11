@@ -1,10 +1,11 @@
-from datetime import datetime
+from datetime import UTC, date, datetime, timedelta
 
 from google.genai import types
 from pydantic import BaseModel, Field, ValidationError
 
 INSERT_HEALTH_RECORD = "insert_health_record"
 GET_HEALTH_RECORDS = "get_health_records"
+SYNC_GARMIN_DAY = "sync_garmin_day"
 
 
 class InsertHealthRecordArgs(BaseModel):
@@ -20,6 +21,30 @@ class GetHealthRecordsArgs(BaseModel):
 
     typ: str = Field(..., min_length=1, max_length=50)
     days_back: int = Field(..., ge=1, le=3650)
+
+
+class SyncGarminDayArgs(BaseModel):
+    """Validates arguments Gemini returns for the sync_garmin_day tool call."""
+
+    date: str = Field(..., min_length=1, max_length=20)
+
+
+def resolve_day(value: str) -> date | None:
+    """Resolves 'today'/'yesterday' or an ISO date string to a date.
+
+    Done in Python rather than trusted to the model's own date arithmetic.
+    Returns None if the value can't be parsed.
+    """
+    normalized = value.strip().lower()
+    today = datetime.now(UTC).date()
+    if normalized == "today":
+        return today
+    if normalized == "yesterday":
+        return today - timedelta(days=1)
+    try:
+        return date.fromisoformat(value.strip())
+    except ValueError:
+        return None
 
 
 # Hand-written OpenAPI-subset schemas for the Gemini function declarations.
@@ -68,6 +93,20 @@ _GET_SCHEMA = types.Schema(
     required=["typ", "days_back"],
 )
 
+_SYNC_GARMIN_SCHEMA = types.Schema(
+    type=types.Type.OBJECT,
+    properties={
+        "date": types.Schema(
+            type=types.Type.STRING,
+            description=(
+                "Which day to fetch from Garmin Connect: 'today', 'yesterday', or an "
+                "ISO date YYYY-MM-DD."
+            ),
+        ),
+    },
+    required=["date"],
+)
+
 GEMINI_TOOL = types.Tool(
     function_declarations=[
         types.FunctionDeclaration(
@@ -86,6 +125,15 @@ GEMINI_TOOL = types.Tool(
             ),
             parameters=_GET_SCHEMA,
         ),
+        types.FunctionDeclaration(
+            name=SYNC_GARMIN_DAY,
+            description=(
+                "Fetch/refresh this user's Garmin Connect data (steps, sleep, heart "
+                "rate, activities, etc.) for a specific day and store it. Call this "
+                "when the user asks to sync, fetch, or refresh Garmin data."
+            ),
+            parameters=_SYNC_GARMIN_SCHEMA,
+        ),
     ]
 )
 
@@ -93,7 +141,10 @@ __all__ = [
     "GEMINI_TOOL",
     "GET_HEALTH_RECORDS",
     "INSERT_HEALTH_RECORD",
+    "SYNC_GARMIN_DAY",
     "GetHealthRecordsArgs",
     "InsertHealthRecordArgs",
+    "SyncGarminDayArgs",
     "ValidationError",
+    "resolve_day",
 ]
