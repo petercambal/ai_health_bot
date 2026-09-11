@@ -1,0 +1,39 @@
+[project]
+name = "telegram-health-tracker"
+version = "0.1.0"
+description = "Telegram bot + LLM (Gemini) health tracker with FastAPI dashboard"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "aiogram>=3.13.0",
+    "google-genai>=0.7.0",
+    "asyncpg>=0.30.0",
+    "apscheduler>=3.10.4",
+    "jinja2>=3.1.4",
+    "pydantic>=2.9.0",
+    "pydantic-settings>=2.5.2",
+    "python-multipart>=0.0.12",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "ruff>=0.7.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]

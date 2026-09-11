@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="sk">
+<head>
+  <meta charset="UTF-8" />
+  <title>Health Tracker Dashboard</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 2rem; background: #f7f7f9; color: #1a1a1a; }
+    h1 { font-size: 1.25rem; }
+    .controls { margin-bottom: 1.5rem; display: flex; gap: 0.75rem; align-items: center; }
+    select, input { padding: 0.35rem 0.5rem; }
+    .card { background: white; border-radius: 8px; padding: 1.5rem; box-shadow: 0 1px 3px rgba(0,0,0,0.1); max-width: 900px; }
+    table { border-collapse: collapse; width: 100%; margin-top: 1rem; font-size: 0.85rem; }
+    th, td { text-align: left; padding: 0.35rem 0.5rem; border-bottom: 1px solid #eee; }
+  </style>
+</head>
+<body>
+  <h1>Health Tracker — user {{ user_id }}</h1>
+
+  <div class="controls">
+    <label>
+      Typ:
+      <select id="typ-select">
+        {% for t in available_types %}
+        <option value="{{ t }}" {% if t == selected_typ %}selected{% endif %}>{{ t }}</option>
+        {% endfor %}
+        {% if selected_typ not in available_types %}
+        <option value="{{ selected_typ }}" selected>{{ selected_typ }}</option>
+        {% endif %}
+      </select>
+    </label>
+    <label>
+      Limit:
+      <input id="limit-input" type="number" value="100" min="1" max="1000" />
+    </label>
+  </div>
+
+  <div class="card">
+    <canvas id="chart" height="100"></canvas>
+  </div>
+
+  <div class="card" style="margin-top:1.5rem;">
+    <table id="records-table">
+      <thead><tr><th>Čas</th><th>Dáta</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <script>
+    const userId = {{ user_id }};
+    let chart;
+
+    function extractNumeric(data) {
+      if (typeof data !== "object" || data === null) return null;
+      for (const [key, value] of Object.entries(data)) {
+        if (typeof value === "number") return value;
+      }
+      return null;
+    }
+
+    async function loadData() {
+      const typ = document.getElementById("typ-select").value;
+      const limit = document.getElementById("limit-input").value || 100;
+      const res = await fetch(`/api/stats?user_id=${userId}&typ=${encodeURIComponent(typ)}&limit=${limit}`);
+      const payload = await res.json();
+      const records = payload.records || [];
+
+      const labels = records.map(r => new Date(r.ts).toLocaleString());
+      const values = records.map(r => extractNumeric(r.data));
+
+      if (chart) chart.destroy();
+      chart = new Chart(document.getElementById("chart"), {
+        type: "line",
+        data: {
+          labels,
+          datasets: [{ label: typ, data: values, borderColor: "#3b82f6", tension: 0.2 }],
+        },
+        options: { responsive: true, plugins: { legend: { display: true } } },
+      });
+
+      const tbody = document.querySelector("#records-table tbody");
+      tbody.innerHTML = "";
+      for (const r of [...records].reverse()) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `<td>${new Date(r.ts).toLocaleString()}</td><td>${JSON.stringify(r.data)}</td>`;
+        tbody.appendChild(tr);
+      }
+    }
+
+    document.getElementById("typ-select").addEventListener("change", loadData);
+    document.getElementById("limit-input").addEventListener("change", loadData);
+    loadData();
+  </script>
+</body>
+</html>
