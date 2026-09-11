@@ -24,22 +24,35 @@ from app.llm.tools import (
 
 logger = logging.getLogger(__name__)
 
-def _routing_instruction() -> str:
+
+def _routing_instruction(known_types: list[str]) -> str:
     """Fixed instruction that guarantees the five routing paths (direct answer /
     insert / query / garmin day sync / garmin range sync) keep working - user-specific
     persona text (set via /system_prompt, stored in auth_user.system_prompt) is
     appended to this per-request in _build_config(), never merged in here.
 
-    Built fresh per request (not a module-level constant) specifically to stamp in
-    today's real date - without it, the model has no ground truth for "today" and
-    silently invents one (observed: resolving "since the start of September" to
-    2024-09-01 instead of the actual current year) when computing start_date/end_date
-    for sync_garmin_range from a relative phrase."""
+    Built fresh per request (not a module-level constant) for two reasons:
+    1. Stamps in today's real date - without it, the model has no ground truth for
+       "today" and silently invents one (observed: resolving "since the start of
+       September" to 2024-09-01 instead of the actual current year).
+    2. Lists this user's actual recorded record types. Without this, a broad request
+       (e.g. "analyze my August") makes the model guess at plausible-sounding types
+       ('sleep', 'activity', 'steps', 'blood_pressure', ...) one at a time via
+       get_health_records, most of which don't exist for this user and return
+       empty - observed running for several rounds of parallel calls before the
+       model would even attempt a text answer."""
     today = datetime.now(UTC).date().isoformat()
+    types_note = (
+        f"This user's existing record types are: {', '.join(known_types)}. Prefer "
+        "these over guessing a new type name when querying with get_health_records."
+        if known_types
+        else "This user has no recorded data yet."
+    )
     return (
         f"Today's date is {today}. Use this as ground truth for any relative date or "
         "date range the user mentions (e.g. 'yesterday', 'this month', 'since the "
         "start of September') - never guess or assume a different year. "
+        f"{types_note} "
         "You are a Telegram bot assistant backed by a personal health-tracking database, "
         "scoped to the current user. When the user reports a new measurement, workout, or "
         "other health data, call insert_health_record. When the user asks for statistics, "
@@ -52,6 +65,12 @@ def _routing_instruction() -> str:
         "directly without calling a tool. Always respond in the language the user wrote in."
     )
 
+
+# Caps the multi-call synthesis loop in _dispatch_tool_calls (see its docstring for
+# why this is a loop, not a single follow-up call). Each round is one Gemini call, so
+# this also bounds the worst-case cost/quota use of one Telegram message.
+_MAX_TOOL_ROUNDS = 3
+
 FALLBACK_ERROR_MESSAGE = (
     "Sorry, I couldn't process that right now. Please try rephrasing it or try "
     "again in a moment."
@@ -63,7 +82,10 @@ async def _build_config(user_id: int) -> types.GenerateContentConfig:
     own persona/profile text (auth_user.system_prompt, set via /system_prompt),
     fetched fresh on every call so an update takes effect immediately."""
     user_prompt = await database.get_system_prompt(user_id)
-    instruction = "\n\n".join(filter(None, [_routing_instruction(), (user_prompt or "").strip()]))
+    known_types = await database.get_distinct_types(user_id)
+    instruction = "\n\n".join(
+        filter(None, [_routing_instruction(known_types), (user_prompt or "").strip()])
+    )
     return types.GenerateContentConfig(tools=[GEMINI_TOOL], system_instruction=instruction)
 
 
@@ -106,46 +128,200 @@ async def handle_user_message(user_id: int, text: str) -> str:
 
     candidate = response.candidates[0] if response.candidates else None
     parts = candidate.content.parts if candidate and candidate.content else []
-    function_call = next((p.function_call for p in parts if p.function_call), None)
+    function_calls = [p.function_call for p in parts if p.function_call]
 
-    if function_call is None:
+    if not function_calls:
         return response.text or FALLBACK_ERROR_MESSAGE
 
-    return await _dispatch_tool_call(
+    return await _dispatch_tool_calls(
         client=client,
         user_id=user_id,
         contents=contents,
         model_turn=candidate.content,
-        function_call=function_call,
+        function_calls=function_calls,
         config=config,
     )
 
 
-async def _dispatch_tool_call(
+async def _dispatch_tool_calls(
     client,
     user_id: int,
     contents: list[types.Content],
     model_turn: types.Content,
-    function_call: types.FunctionCall,
+    function_calls: list[types.FunctionCall],
     config: types.GenerateContentConfig,
 ) -> str:
+    # Fast path: a single non-query action call keeps the original one-Gemini-call
+    # behavior - a plain confirmation doesn't need a synthesis round-trip, and
+    # skipping it matters given free-tier request quotas.
+    if len(function_calls) == 1 and function_calls[0].name != GET_HEALTH_RECORDS:
+        fc = function_calls[0]
+        raw_args = dict(fc.args or {})
+        if fc.name == INSERT_HEALTH_RECORD:
+            return await _handle_insert(user_id, raw_args)
+        if fc.name == SYNC_GARMIN_DAY:
+            return await _handle_sync_garmin(user_id, raw_args)
+        if fc.name == SYNC_GARMIN_RANGE:
+            return await _handle_sync_garmin_range(user_id, raw_args)
+        logger.warning("Gemini called unknown tool %r (user_id=%s)", fc.name, user_id)
+        return FALLBACK_ERROR_MESSAGE
+
+    # General path: one or more calls that need the model to see structured results
+    # and synthesize a final reply. get_health_records always needs this; so does any
+    # turn with more than one call - e.g. some models issue several parallel
+    # get_health_records calls (one per data type) for a broad "analyze my month"
+    # request, and every function_call in a turn needs a matching function_response
+    # before the conversation can continue, so they're all executed here.
+    #
+    # Bounded loop, not a single follow-up call: passing tool_config with
+    # mode=NONE ("model will not predict any function calls") to force a text-only
+    # reply on the follow-up turn was tried and did NOT work reliably (observed with
+    # gemini-3.6-flash still returning function_calls despite it), so instead this
+    # keeps answering whatever calls come back, up to _MAX_TOOL_ROUNDS, and accepts
+    # whatever text exists after that rather than looping forever.
+    contents.append(model_turn)
+    current_calls = function_calls
+    response: types.GenerateContentResponse | None = None
+
+    for _round in range(_MAX_TOOL_ROUNDS):
+        response_parts = []
+        for fc in current_calls:
+            result = await _execute_for_synthesis(user_id, fc)
+            response_parts.append(
+                types.Part(function_response=types.FunctionResponse(id=fc.id, name=fc.name, response=result))
+            )
+        contents.append(types.Content(role="user", parts=response_parts))
+
+        try:
+            response = await client.aio.models.generate_content(
+                model=settings.gemini_model,
+                contents=contents,
+                config=config,
+            )
+        except Exception:
+            logger.exception(
+                "Gemini follow-up generate_content call failed (user_id=%s)", user_id
+            )
+            return FALLBACK_ERROR_MESSAGE
+
+        await _log_usage(user_id, response)
+
+        candidate = response.candidates[0] if response.candidates else None
+        parts = candidate.content.parts if candidate and candidate.content else []
+        current_calls = [p.function_call for p in parts if p.function_call]
+
+        if not current_calls:
+            return response.text or FALLBACK_ERROR_MESSAGE
+
+        contents.append(candidate.content)
+
+    logger.warning(
+        "Hit _MAX_TOOL_ROUNDS (%d) without a text reply (user_id=%s)", _MAX_TOOL_ROUNDS, user_id
+    )
+    return (response.text if response else None) or (
+        "I gathered some data but couldn't finish putting together an answer. "
+        "Try asking about a narrower period or a specific metric."
+    )
+
+
+async def _execute_for_synthesis(user_id: int, function_call: types.FunctionCall) -> dict:
+    """Executes one tool call for the multi-call/synthesis path in _dispatch_tool_calls
+    and returns a JSON-able dict to feed back to the model as that call's
+    function_response. Never raises - errors become a structured payload so the model
+    can explain the failure in its own words instead of the turn just failing."""
     name = function_call.name
     raw_args = dict(function_call.args or {})
 
     if name == INSERT_HEALTH_RECORD:
-        return await _handle_insert(user_id, raw_args)
+        try:
+            args = InsertHealthRecordArgs.model_validate(raw_args)
+        except ValidationError:
+            logger.warning(
+                "Invalid insert_health_record args from Gemini (user_id=%s): %r", user_id, raw_args
+            )
+            return {"error": "invalid arguments"}
+        try:
+            await database.insert_health_record(
+                user_id=user_id, typ=args.typ, data=args.data, ts=args.ts
+            )
+        except Exception:
+            logger.exception("Failed to insert health record (user_id=%s)", user_id)
+            return {"error": "failed to save"}
+        return {"status": "saved", "typ": args.typ}
 
     if name == GET_HEALTH_RECORDS:
-        return await _handle_get(client, user_id, contents, model_turn, function_call, raw_args, config)
+        try:
+            args = GetHealthRecordsArgs.model_validate(raw_args)
+        except ValidationError:
+            logger.warning(
+                "Invalid get_health_records args from Gemini (user_id=%s): %r", user_id, raw_args
+            )
+            return {"error": "invalid arguments"}
+        try:
+            records = await database.get_health_records(
+                user_id=user_id, typ=args.typ, days_back=args.days_back
+            )
+        except Exception:
+            logger.exception("Failed to fetch health records (user_id=%s)", user_id)
+            return {"error": "failed to fetch records"}
+        return {"records": records}
 
     if name == SYNC_GARMIN_DAY:
-        return await _handle_sync_garmin(user_id, raw_args)
+        try:
+            args = SyncGarminDayArgs.model_validate(raw_args)
+        except ValidationError:
+            logger.warning(
+                "Invalid sync_garmin_day args from Gemini (user_id=%s): %r", user_id, raw_args
+            )
+            return {"error": "invalid arguments"}
+        day = resolve_day(args.date)
+        if day is None:
+            return {"error": "could not parse date"}
+        try:
+            await garmin_sync.sync_day(user_id=user_id, day=day)
+        except GarminAuthRequired as e:
+            logger.warning("Garmin auth required (user_id=%s): %s", user_id, e)
+            return {"error": str(e)}
+        except Exception:
+            logger.exception("Garmin sync failed (user_id=%s, day=%s)", user_id, day)
+            return {"error": "garmin sync failed"}
+        return {"status": "synced", "day": day.isoformat()}
 
     if name == SYNC_GARMIN_RANGE:
-        return await _handle_sync_garmin_range(user_id, raw_args)
+        try:
+            args = SyncGarminRangeArgs.model_validate(raw_args)
+        except ValidationError:
+            logger.warning(
+                "Invalid sync_garmin_range args from Gemini (user_id=%s): %r", user_id, raw_args
+            )
+            return {"error": "invalid arguments"}
+        start = resolve_day(args.start_date)
+        end = resolve_day(args.end_date)
+        if start is None or end is None:
+            return {"error": "could not parse dates"}
+        span_days = abs((end - start).days) + 1
+        if span_days > garmin_sync.MAX_RANGE_DAYS:
+            return {"error": f"range too long, max {garmin_sync.MAX_RANGE_DAYS} days at a time"}
+        try:
+            result = await garmin_sync.sync_range(user_id=user_id, start=start, end=end)
+        except GarminAuthRequired as e:
+            logger.warning("Garmin auth required (user_id=%s): %s", user_id, e)
+            return {"error": str(e)}
+        except Exception:
+            logger.exception(
+                "Garmin range sync failed (user_id=%s, start=%s, end=%s)", user_id, start, end
+            )
+            return {"error": "garmin range sync failed"}
+        ok_days = [d for d, v in result.items() if v is not None]
+        failed_days = [d for d, v in result.items() if v is None]
+        return {
+            "synced_days": len(ok_days),
+            "total_days": len(result),
+            "failed_days": [d.isoformat() for d in sorted(failed_days)],
+        }
 
     logger.warning("Gemini called unknown tool %r (user_id=%s)", name, user_id)
-    return FALLBACK_ERROR_MESSAGE
+    return {"error": f"unknown tool {name!r}"}
 
 
 async def _handle_insert(user_id: int, raw_args: dict) -> str:
@@ -171,66 +347,6 @@ async def _handle_insert(user_id: int, raw_args: dict) -> str:
         return FALLBACK_ERROR_MESSAGE
 
     return f"Saved ✅ ({args.typ})"
-
-
-async def _handle_get(
-    client,
-    user_id: int,
-    contents: list[types.Content],
-    model_turn: types.Content,
-    function_call: types.FunctionCall,
-    raw_args: dict,
-    config: types.GenerateContentConfig,
-) -> str:
-    try:
-        args = GetHealthRecordsArgs.model_validate(raw_args)
-    except ValidationError:
-        logger.warning(
-            "Invalid get_health_records args from Gemini (user_id=%s): %r",
-            user_id,
-            raw_args,
-        )
-        return (
-            "I wasn't quite sure what data you want to see. Try naming the "
-            "measurement type and a time period (e.g. 'weight over the last 30 days')."
-        )
-
-    try:
-        records = await database.get_health_records(
-            user_id=user_id, typ=args.typ, days_back=args.days_back
-        )
-    except Exception:
-        logger.exception("Failed to fetch health records (user_id=%s)", user_id)
-        return FALLBACK_ERROR_MESSAGE
-
-    contents.append(model_turn)
-    contents.append(
-        types.Content(
-            role="user",
-            parts=[
-                types.Part.from_function_response(
-                    name=function_call.name,
-                    response={"records": records},
-                )
-            ],
-        )
-    )
-
-    try:
-        response = await client.aio.models.generate_content(
-            model=settings.gemini_model,
-            contents=contents,
-            config=config,
-        )
-    except Exception:
-        logger.exception(
-            "Gemini follow-up generate_content call failed (user_id=%s)", user_id
-        )
-        return FALLBACK_ERROR_MESSAGE
-
-    await _log_usage(user_id, response)
-
-    return response.text or FALLBACK_ERROR_MESSAGE
 
 
 async def _handle_sync_garmin(user_id: int, raw_args: dict) -> str:

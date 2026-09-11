@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     telegram_webhook_secret: str
 
     gemini_api_key: str
-    gemini_model: str = "gemini-2.5-flash"
+    gemini_model: str = "gemini-3.6-flash"
 
     database_url: str
 
