@@ -1,10 +1,12 @@
+import asyncio
 import logging
 import re
+from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime
 
 from aiogram import Bot, Dispatcher, Router
 from aiogram.client.default import DefaultBotProperties
-from aiogram.enums import ParseMode
+from aiogram.enums import ChatAction, ParseMode
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject
 from aiogram.types import BotCommand, Message
@@ -71,6 +73,27 @@ async def send_reply(message: Message, text: str) -> None:
         await message.answer(text, parse_mode=None)
 
 
+@asynccontextmanager
+async def _typing_indicator(chat_id: int):
+    """Shows Telegram's "bot is typing..." indicator for the duration of the wrapped
+    block. Telegram hides it again ~5s after the last sendChatAction call, so this
+    resends it on a loop rather than once - needed since a Gemini call (possibly with
+    Garmin/OpenAlex tool calls in between) regularly takes longer than that."""
+
+    async def _loop() -> None:
+        while True:
+            await bot.send_chat_action(chat_id, action=ChatAction.TYPING)
+            await asyncio.sleep(4)
+
+    task = asyncio.create_task(_loop())
+    try:
+        yield
+    finally:
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+
+
 @router.message(Command("garmin_link"))
 async def on_garmin_link(message: Message) -> None:
     telegram_id = await _check_authorized(message)
@@ -88,7 +111,8 @@ async def on_daily_report(message: Message) -> None:
     if telegram_id is None:
         return
 
-    reply = await handle_user_message(user_id=telegram_id, text=_DAILY_REPORT_PROMPT)
+    async with _typing_indicator(message.chat.id):
+        reply = await handle_user_message(user_id=telegram_id, text=_DAILY_REPORT_PROMPT)
     await send_reply(message, reply)
 
 
@@ -212,7 +236,8 @@ async def on_message(message: Message) -> None:
         await send_reply(message, "I can only process text messages for now.")
         return
 
-    reply = await handle_user_message(user_id=telegram_id, text=message.text)
+    async with _typing_indicator(message.chat.id):
+        reply = await handle_user_message(user_id=telegram_id, text=message.text)
     await send_reply(message, reply)
 
 
