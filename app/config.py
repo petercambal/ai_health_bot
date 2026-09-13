@@ -11,6 +11,14 @@ class Settings(BaseSettings):
     gemini_api_key: str
     gemini_model: str = "gemini-3.6-flash"
 
+    # Optional: unauthenticated Semantic Scholar API calls share one very easy-to-hit
+    # global rate limit (observed 429 on the very first request in testing). A free
+    # key raises that limit substantially - apply at
+    # https://www.semanticscholar.org/product/api#api-key-form. Without one,
+    # search_scientific_studies just fails gracefully and Gemini answers without
+    # citations for that message.
+    semantic_scholar_api_key: str | None = None
+
     database_url: str
 
     log_level: str = "INFO"

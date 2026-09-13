@@ -7,6 +7,7 @@ INSERT_HEALTH_RECORD = "insert_health_record"
 GET_HEALTH_RECORDS = "get_health_records"
 SYNC_GARMIN_DAY = "sync_garmin_day"
 SYNC_GARMIN_RANGE = "sync_garmin_range"
+SEARCH_STUDIES = "search_scientific_studies"
 
 
 class InsertHealthRecordArgs(BaseModel):
@@ -35,6 +36,12 @@ class SyncGarminRangeArgs(BaseModel):
 
     start_date: str = Field(..., min_length=1, max_length=20)
     end_date: str = Field(..., min_length=1, max_length=20)
+
+
+class SearchStudiesArgs(BaseModel):
+    """Validates arguments Gemini returns for the search_scientific_studies tool call."""
+
+    query: str = Field(..., min_length=1, max_length=200)
 
 
 def resolve_day(value: str) -> date | None:
@@ -130,6 +137,21 @@ _SYNC_GARMIN_RANGE_SCHEMA = types.Schema(
     required=["start_date", "end_date"],
 )
 
+_SEARCH_STUDIES_SCHEMA = types.Schema(
+    type=types.Type.OBJECT,
+    properties={
+        "query": types.Schema(
+            type=types.Type.STRING,
+            description=(
+                "Search keywords for peer-reviewed research on Semantic Scholar, e.g. "
+                "'HRV sleep recovery' or 'VO2 max training longevity'. Derive these from "
+                "the health topic the user is asking about, not their literal wording."
+            ),
+        ),
+    },
+    required=["query"],
+)
+
 GEMINI_TOOL = types.Tool(
     function_declarations=[
         types.FunctionDeclaration(
@@ -167,6 +189,17 @@ GEMINI_TOOL = types.Tool(
             ),
             parameters=_SYNC_GARMIN_RANGE_SCHEMA,
         ),
+        types.FunctionDeclaration(
+            name=SEARCH_STUDIES,
+            description=(
+                "Search Semantic Scholar for peer-reviewed scientific studies on a "
+                "health/longevity topic. Call this when discussing something worth "
+                "grounding in current research (e.g. sleep, HRV, recovery, training "
+                "load, VO2 max, nutrition, longevity). Always cite the author(s) and "
+                "publication year of any study you reference in your answer."
+            ),
+            parameters=_SEARCH_STUDIES_SCHEMA,
+        ),
     ]
 )
 
@@ -174,10 +207,12 @@ __all__ = [
     "GEMINI_TOOL",
     "GET_HEALTH_RECORDS",
     "INSERT_HEALTH_RECORD",
+    "SEARCH_STUDIES",
     "SYNC_GARMIN_DAY",
     "SYNC_GARMIN_RANGE",
     "GetHealthRecordsArgs",
     "InsertHealthRecordArgs",
+    "SearchStudiesArgs",
     "SyncGarminDayArgs",
     "SyncGarminRangeArgs",
     "ValidationError",

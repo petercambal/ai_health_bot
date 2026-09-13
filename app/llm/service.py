@@ -8,28 +8,40 @@ from app import database
 from app.config import settings
 from app.garmin import sync as garmin_sync
 from app.garmin.sync import GarminAuthRequired
+from app.llm import studies
 from app.llm.client import get_client
 from app.llm.tools import (
     GEMINI_TOOL,
     GET_HEALTH_RECORDS,
     INSERT_HEALTH_RECORD,
+    SEARCH_STUDIES,
     SYNC_GARMIN_DAY,
     SYNC_GARMIN_RANGE,
     GetHealthRecordsArgs,
     InsertHealthRecordArgs,
+    SearchStudiesArgs,
     SyncGarminDayArgs,
     SyncGarminRangeArgs,
     resolve_day,
 )
 
+# Fast-path-eligible tools: single-action calls that produce a deterministic
+# confirmation without needing the model to see/synthesize results, so they skip the
+# follow-up Gemini round-trip in _dispatch_tool_calls (see there). Deliberately an
+# allowlist, not "anything but get_health_records" - a bare exclusion would silently
+# fast-path any newly added query-style tool (e.g. search_scientific_studies) into
+# the wrong branch, where it has no case and falls through to "unknown tool".
+_FAST_PATH_TOOLS = frozenset({INSERT_HEALTH_RECORD, SYNC_GARMIN_DAY, SYNC_GARMIN_RANGE})
+
 logger = logging.getLogger(__name__)
 
 
 def _routing_instruction(known_types: list[str]) -> str:
-    """Fixed instruction that guarantees the five routing paths (direct answer /
-    insert / query / garmin day sync / garmin range sync) keep working - user-specific
-    persona text (set via /system_prompt, stored in auth_user.system_prompt) is
-    appended to this per-request in _build_config(), never merged in here.
+    """Fixed instruction that guarantees the six routing paths (direct answer /
+    insert / query / garmin day sync / garmin range sync / study search) keep
+    working - user-specific persona text (set via /system_prompt, stored in
+    auth_user.system_prompt) is appended to this per-request in _build_config(),
+    never merged in here.
 
     Built fresh per request (not a module-level constant) for two reasons:
     1. Stamps in today's real date - without it, the model has no ground truth for
@@ -61,9 +73,31 @@ def _routing_instruction(known_types: list[str]) -> str:
         "sync_garmin_day; for a range of days (e.g. backfilling history), call "
         f"sync_garmin_range (max {garmin_sync.MAX_RANGE_DAYS} days at a time - if the user "
         "asks for a longer period, sync the most recent portion and tell them to ask again "
-        "for the rest). For anything else - general questions, advice, small talk - answer "
-        "directly without calling a tool. Always respond in the language the user wrote in."
+        "for the rest). When the topic would benefit from current research (see your "
+        "persona instructions below for when that applies), call search_scientific_studies. "
+        "For anything else - general questions, advice, small talk - answer directly "
+        "without calling a tool. Always respond in the language the user wrote in."
     )
+
+
+# Shared persona layer, applied to every user before their own /system_prompt (set
+# via auth_user.system_prompt) is appended in _build_config(). Edit this to change
+# the assistant's baseline character/expertise for everyone at once; per-user
+# specifics (stats, goals, training plan) belong in /system_prompt instead, not here.
+_BASE_PERSONA = (
+    "You are a longevity expert and coach. You analyze health data collected from "
+    "multiple sources (this user's manually logged records and their Garmin data) to "
+    "give grounded, practical guidance on healthspan, recovery, and performance. When "
+    "a question touches a topic worth backing with current research - sleep, HRV, "
+    "recovery, training load, VO2 max, nutrition, longevity interventions, and "
+    "similar - identify the relevant scientific keywords (e.g. a sleep question maps "
+    "to keywords like 'HRV' and 'sleep architecture') and call "
+    "search_scientific_studies with them before answering. When you cite a study, "
+    "always name the author(s) and publication year, and weave the citation into the "
+    "answer naturally rather than just listing references at the end. If no relevant "
+    "studies come back, say so plainly and answer from general expertise instead of "
+    "inventing a citation."
+)
 
 
 # Caps the multi-call synthesis loop in _dispatch_tool_calls (see its docstring for
@@ -78,13 +112,17 @@ FALLBACK_ERROR_MESSAGE = (
 
 
 async def _build_config(user_id: int) -> types.GenerateContentConfig:
-    """Builds the per-request Gemini config: fixed routing instruction + this user's
-    own persona/profile text (auth_user.system_prompt, set via /system_prompt),
-    fetched fresh on every call so an update takes effect immediately."""
+    """Builds the per-request Gemini config, three layers concatenated: the fixed
+    routing instruction, the shared longevity-coach persona (_BASE_PERSONA), and this
+    user's own profile text (auth_user.system_prompt, set via /system_prompt) -
+    fetched fresh on every call so a /system_prompt update takes effect immediately."""
     user_prompt = await database.get_system_prompt(user_id)
     known_types = await database.get_distinct_types(user_id)
     instruction = "\n\n".join(
-        filter(None, [_routing_instruction(known_types), (user_prompt or "").strip()])
+        filter(
+            None,
+            [_routing_instruction(known_types), _BASE_PERSONA, (user_prompt or "").strip()],
+        )
     )
     return types.GenerateContentConfig(tools=[GEMINI_TOOL], system_instruction=instruction)
 
@@ -154,7 +192,7 @@ async def _dispatch_tool_calls(
     # Fast path: a single non-query action call keeps the original one-Gemini-call
     # behavior - a plain confirmation doesn't need a synthesis round-trip, and
     # skipping it matters given free-tier request quotas.
-    if len(function_calls) == 1 and function_calls[0].name != GET_HEALTH_RECORDS:
+    if len(function_calls) == 1 and function_calls[0].name in _FAST_PATH_TOOLS:
         fc = function_calls[0]
         raw_args = dict(fc.args or {})
         if fc.name == INSERT_HEALTH_RECORD:
@@ -319,6 +357,21 @@ async def _execute_for_synthesis(user_id: int, function_call: types.FunctionCall
             "total_days": len(result),
             "failed_days": [d.isoformat() for d in sorted(failed_days)],
         }
+
+    if name == SEARCH_STUDIES:
+        try:
+            args = SearchStudiesArgs.model_validate(raw_args)
+        except ValidationError:
+            logger.warning(
+                "Invalid search_scientific_studies args from Gemini (user_id=%s): %r",
+                user_id,
+                raw_args,
+            )
+            return {"error": "invalid arguments"}
+        results = await studies.search_studies(args.query)
+        if not results:
+            return {"studies": [], "note": "no studies found or search unavailable right now"}
+        return {"studies": results}
 
     logger.warning("Gemini called unknown tool %r (user_id=%s)", name, user_id)
     return {"error": f"unknown tool {name!r}"}

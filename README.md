@@ -195,23 +195,49 @@ ukáže tokeny bez ceny namiesto tichého nesprávneho súčtu.
 
 ## Persona / system instructions (`/system_prompt`)
 
-`app/llm/service.py` skladá `system_instruction` pre Gemini z dvoch častí, per-request
-(`_build_config()`), nie raz pri štarte:
+`app/llm/service.py` skladá `system_instruction` pre Gemini z **troch** vrstiev,
+per-request (`_build_config()`), nie raz pri štarte:
 
-1. pevná routing inštrukcia v kóde (`_ROUTING_INSTRUCTION`) — zaručuje, že fungujú
-   štyri cesty: priama odpoveď / `insert_health_record` / `get_health_records` /
-   `sync_garmin_day`; needituj ju, inak sa môže pokaziť tool-calling.
-2. `auth_user.system_prompt` — voľný text s tvojou personou a profilom, per-používateľ,
-   uložený v DB. Nastavuje sa priamo v Telegrame:
+1. **`_routing_instruction()`** — pevná, v kóde. Zaručuje, že funguje tool-routing
+   (`insert_health_record` / `get_health_records` / `sync_garmin_day` /
+   `sync_garmin_range` / `search_scientific_studies`) a posiela modelu skutočný
+   dnešný dátum + zoznam reálne existujúcich `typ` hodnôt pre daného usera (aby
+   nehádal naslepo). Needituj bez rozmyslu, inak sa môže pokaziť tool-calling.
+2. **`_BASE_PERSONA`** — pevná, v kóde, spoločná pre všetkých používateľov: "si
+   longevity expert a coach", kombinuje dáta z viacerých zdrojov s aktuálnym
+   vedeckým výskumom cez Semantic Scholar (`search_scientific_studies`), pri citácii
+   vždy uvedie autora a rok. Toto uprav priamo v `service.py`, ak chceš zmeniť
+   základný charakter/expertízu bota pre všetkých naraz.
+3. **`auth_user.system_prompt`** — voľný text s tvojím osobným profilom (výška, ciele,
+   tréningový plán...), per-používateľ, uložený v DB. Nastavuje sa priamo v Telegrame:
 
 ```
-/system_prompt Si môj osobný kondičný tréner, mám 196 cm, plán je 2x posilka...
+/system_prompt Mám 196 cm, plán je 2x posilka, 1x beh, 1x plávanie...
 /system_prompt            (bez textu - zobrazí aktuálne nastavený prompt)
 /system_prompt clear      (zmaže ho)
 ```
 
 Keďže sa `system_prompt` číta z DB pri každej správe, zmena sa prejaví okamžite —
-žiadny reštart appky netreba.
+žiadny reštart appky netreba (zmena `_BASE_PERSONA`/`_routing_instruction()` reštart
+vyžaduje, keďže sú v kóde).
+
+### Vedecké štúdie (`search_scientific_studies`)
+
+Keď sa téma oplatí podložiť výskumom (spánok, HRV, regenerácia, tréningová záťaž,
+VO2 max, výživa, longevity...), model si sám odvodí kľúčové slová a zavolá
+Semantic Scholar API (`app/llm/studies.py`) — bez API kľúča, len s veľmi nízkym
+zdieľaným rate limitom (v testovaní padol 429 hneď na prvý request). Free kľúč
+(`SEMANTIC_SCHOLAR_API_KEY` v `.env`) dá vlastný, oveľa vyšší limit —
+[https://www.semanticscholar.org/product/api#api-key-form](https://www.semanticscholar.org/product/api#api-key-form).
+Bez neho sa nástroj len ticho vzdá (žiadne štúdie tú správu) a model to používateľovi
+transparentne povie namiesto vymyslenej citácie — to je zámer, nie chyba.
+
+Keďže niektoré modely (pozorované pri `gemini-3.6-flash`) vedia na širšiu otázku
+("sprav analýzu") vydať viacero paralelných tool-callov naraz (napr. 5x
+`get_health_records` s rôznymi typmi), `_dispatch_tool_calls` to podporuje priamo —
+spáruje odpovede podľa `id` volania, nie len podľa mena. Ak model chce po prvom kole
+ešte ďalšie tool cally namiesto textovej odpovede, cyklus pokračuje až do
+`_MAX_TOOL_ROUNDS` (3), potom vráti čo má, namiesto nekonečného cyklu.
 
 ## CI/CD — GitHub Container Registry
 
