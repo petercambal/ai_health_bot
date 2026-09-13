@@ -151,6 +151,27 @@ async def get_records_for_dashboard(user_id: int, typ: str, limit: int) -> list[
     ]
 
 
+async def get_last_workout(user_id: int, variant: str) -> dict | None:
+    """Most recently logged workout session for this variant - health_records rows
+    with typ='workout' store one row per session (see log_workout_session), so this
+    is just the latest one matching data->>'variant'."""
+    pool = get_pool()
+    row = await pool.fetchrow(
+        """
+        SELECT ts, data
+        FROM health_records
+        WHERE user_id = $1 AND typ = 'workout' AND data->>'variant' = $2
+        ORDER BY ts DESC
+        LIMIT 1
+        """,
+        user_id,
+        variant,
+    )
+    if row is None:
+        return None
+    return {"ts": row["ts"].isoformat(), **row["data"]}
+
+
 async def get_distinct_types(user_id: int) -> list[str]:
     pool = get_pool()
     rows = await pool.fetch(

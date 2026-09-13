@@ -8,6 +8,8 @@ GET_HEALTH_RECORDS = "get_health_records"
 SYNC_GARMIN_DAY = "sync_garmin_day"
 SYNC_GARMIN_RANGE = "sync_garmin_range"
 SEARCH_STUDIES = "search_scientific_studies"
+GET_LAST_WORKOUT = "get_last_workout"
+LOG_WORKOUT_SESSION = "log_workout_session"
 
 
 class InsertHealthRecordArgs(BaseModel):
@@ -42,6 +44,29 @@ class SearchStudiesArgs(BaseModel):
     """Validates arguments Gemini returns for the search_scientific_studies tool call."""
 
     query: str = Field(..., min_length=1, max_length=200)
+
+
+class GetLastWorkoutArgs(BaseModel):
+    """Validates arguments Gemini returns for the get_last_workout tool call."""
+
+    variant: str = Field(..., min_length=1, max_length=100)
+
+
+class WorkoutExerciseArgs(BaseModel):
+    """One exercise entry within a log_workout_session tool call."""
+
+    cvik: str = Field(..., min_length=1, max_length=100)
+    vykon: str = Field(..., min_length=1, max_length=200)
+    narocnost: str | None = Field(None, max_length=50)
+    poznamka: str | None = Field(None, max_length=500)
+
+
+class LogWorkoutSessionArgs(BaseModel):
+    """Validates arguments Gemini returns for the log_workout_session tool call."""
+
+    variant: str = Field(..., min_length=1, max_length=100)
+    ts: datetime | None = None
+    cviky: list[WorkoutExerciseArgs] = Field(..., min_length=1, max_length=30)
 
 
 def resolve_day(value: str) -> date | None:
@@ -152,6 +177,63 @@ _SEARCH_STUDIES_SCHEMA = types.Schema(
     required=["query"],
 )
 
+_GET_LAST_WORKOUT_SCHEMA = types.Schema(
+    type=types.Type.OBJECT,
+    properties={
+        "variant": types.Schema(
+            type=types.Type.STRING,
+            description=(
+                "Which workout variant to look up, e.g. 'Variant 1' or 'Variant 2' - "
+                "use the same name the user uses."
+            ),
+        ),
+    },
+    required=["variant"],
+)
+
+_WORKOUT_EXERCISE_SCHEMA = types.Schema(
+    type=types.Type.OBJECT,
+    properties={
+        "cvik": types.Schema(type=types.Type.STRING, description="Exercise name, e.g. 'Bulharsky drep'."),
+        "vykon": types.Schema(
+            type=types.Type.STRING,
+            description="Weight and reps performed, e.g. '10kg / 3x10' or '17.5 kg / 3x12'.",
+        ),
+        "narocnost": types.Schema(
+            type=types.Type.STRING,
+            description="Subjective difficulty if mentioned, e.g. 'OK', 'Limit', 'Moderate'. Omit if not mentioned.",
+        ),
+        "poznamka": types.Schema(
+            type=types.Type.STRING,
+            description=(
+                "Any free-form note about this exercise, e.g. form cues, pain, or a tip "
+                "for next time. Omit if none."
+            ),
+        ),
+    },
+    required=["cvik", "vykon"],
+)
+
+_LOG_WORKOUT_SESSION_SCHEMA = types.Schema(
+    type=types.Type.OBJECT,
+    properties={
+        "variant": types.Schema(
+            type=types.Type.STRING,
+            description="Which workout variant this session was, e.g. 'Variant 1' or 'Variant 2'.",
+        ),
+        "ts": types.Schema(
+            type=types.Type.STRING,
+            description="ISO 8601 date/time of the workout. Omit to use the current time.",
+        ),
+        "cviky": types.Schema(
+            type=types.Type.ARRAY,
+            description="One entry per exercise performed in this session, in the order they were done.",
+            items=_WORKOUT_EXERCISE_SCHEMA,
+        ),
+    },
+    required=["variant", "cviky"],
+)
+
 GEMINI_TOOL = types.Tool(
     function_declarations=[
         types.FunctionDeclaration(
@@ -200,21 +282,49 @@ GEMINI_TOOL = types.Tool(
             ),
             parameters=_SEARCH_STUDIES_SCHEMA,
         ),
+        types.FunctionDeclaration(
+            name=GET_LAST_WORKOUT,
+            description=(
+                "Fetch the user's most recently logged workout for a given variant "
+                "(e.g. 'Variant 1'), including the exercises, weights/reps, and any "
+                "notes from that session. Call this when the user says they want to "
+                "work out a specific variant, so you can propose today's exercises "
+                "and weights based on last time."
+            ),
+            parameters=_GET_LAST_WORKOUT_SCHEMA,
+        ),
+        types.FunctionDeclaration(
+            name=LOG_WORKOUT_SESSION,
+            description=(
+                "Save a completed workout session as one record: the variant and the "
+                "list of exercises performed, each with weight/reps and any "
+                "difficulty/notes. Call this when the user pastes or describes a "
+                "finished workout summary listing multiple exercises - parse it into "
+                "structured entries rather than calling insert_health_record per "
+                "exercise, so the data stays consistent for future lookups."
+            ),
+            parameters=_LOG_WORKOUT_SESSION_SCHEMA,
+        ),
     ]
 )
 
 __all__ = [
     "GEMINI_TOOL",
     "GET_HEALTH_RECORDS",
+    "GET_LAST_WORKOUT",
     "INSERT_HEALTH_RECORD",
+    "LOG_WORKOUT_SESSION",
     "SEARCH_STUDIES",
     "SYNC_GARMIN_DAY",
     "SYNC_GARMIN_RANGE",
     "GetHealthRecordsArgs",
+    "GetLastWorkoutArgs",
     "InsertHealthRecordArgs",
+    "LogWorkoutSessionArgs",
     "SearchStudiesArgs",
     "SyncGarminDayArgs",
     "SyncGarminRangeArgs",
     "ValidationError",
+    "WorkoutExerciseArgs",
     "resolve_day",
 ]

@@ -13,12 +13,16 @@ from app.llm.client import get_client
 from app.llm.tools import (
     GEMINI_TOOL,
     GET_HEALTH_RECORDS,
+    GET_LAST_WORKOUT,
     INSERT_HEALTH_RECORD,
+    LOG_WORKOUT_SESSION,
     SEARCH_STUDIES,
     SYNC_GARMIN_DAY,
     SYNC_GARMIN_RANGE,
     GetHealthRecordsArgs,
+    GetLastWorkoutArgs,
     InsertHealthRecordArgs,
+    LogWorkoutSessionArgs,
     SearchStudiesArgs,
     SyncGarminDayArgs,
     SyncGarminRangeArgs,
@@ -31,7 +35,9 @@ from app.llm.tools import (
 # allowlist, not "anything but get_health_records" - a bare exclusion would silently
 # fast-path any newly added query-style tool (e.g. search_scientific_studies) into
 # the wrong branch, where it has no case and falls through to "unknown tool".
-_FAST_PATH_TOOLS = frozenset({INSERT_HEALTH_RECORD, SYNC_GARMIN_DAY, SYNC_GARMIN_RANGE})
+_FAST_PATH_TOOLS = frozenset(
+    {INSERT_HEALTH_RECORD, SYNC_GARMIN_DAY, SYNC_GARMIN_RANGE, LOG_WORKOUT_SESSION}
+)
 
 logger = logging.getLogger(__name__)
 
@@ -204,6 +210,8 @@ async def _dispatch_tool_calls(
             return await _handle_sync_garmin(user_id, raw_args)
         if fc.name == SYNC_GARMIN_RANGE:
             return await _handle_sync_garmin_range(user_id, raw_args)
+        if fc.name == LOG_WORKOUT_SESSION:
+            return await _handle_log_workout_session(user_id, raw_args)
         logger.warning("Gemini called unknown tool %r (user_id=%s)", fc.name, user_id)
         return FALLBACK_ERROR_MESSAGE
 
@@ -415,8 +423,53 @@ async def _execute_for_synthesis(user_id: int, function_call: types.FunctionCall
             return {"studies": [], "note": "no studies found or search unavailable right now"}
         return {"studies": results}
 
+    if name == GET_LAST_WORKOUT:
+        try:
+            args = GetLastWorkoutArgs.model_validate(raw_args)
+        except ValidationError:
+            logger.warning(
+                "Invalid get_last_workout args from Gemini (user_id=%s): %r", user_id, raw_args
+            )
+            return {"error": "invalid arguments"}
+        workout = await database.get_last_workout(user_id=user_id, variant=args.variant)
+        if workout is None:
+            return {"note": f"no previous workout logged for {args.variant!r}"}
+        return {"last_workout": workout}
+
+    if name == LOG_WORKOUT_SESSION:
+        result = await _save_workout_session(user_id, raw_args)
+        if result is None:
+            return {"error": "invalid arguments"}
+        return {"status": "saved", "variant": result.variant, "exercise_count": len(result.cviky)}
+
     logger.warning("Gemini called unknown tool %r (user_id=%s)", name, user_id)
     return {"error": f"unknown tool {name!r}"}
+
+
+async def _save_workout_session(user_id: int, raw_args: dict) -> LogWorkoutSessionArgs | None:
+    """Validates and stores a log_workout_session call as one health_records row
+    (typ='workout', one row per session - see database.get_last_workout). Shared by
+    the fast path and the multi-call synthesis path so both save identically.
+    Returns None (rather than raising) on invalid args, matching the other
+    _execute_for_synthesis-style handlers."""
+    try:
+        args = LogWorkoutSessionArgs.model_validate(raw_args)
+    except ValidationError:
+        logger.warning(
+            "Invalid log_workout_session args from Gemini (user_id=%s): %r", user_id, raw_args
+        )
+        return None
+
+    data = {
+        "variant": args.variant,
+        "cviky": [c.model_dump(exclude_none=True) for c in args.cviky],
+    }
+    try:
+        await database.insert_health_record(user_id=user_id, typ="workout", data=data, ts=args.ts)
+    except Exception:
+        logger.exception("Failed to save workout session (user_id=%s)", user_id)
+        return None
+    return args
 
 
 async def _handle_insert(user_id: int, raw_args: dict) -> str:
@@ -519,3 +572,13 @@ async def _handle_sync_garmin_range(user_id: int, raw_args: dict) -> str:
         failed_str = ", ".join(d.isoformat() for d in sorted(failed_days))
         summary += f"\nFailed: {failed_str}"
     return summary
+
+
+async def _handle_log_workout_session(user_id: int, raw_args: dict) -> str:
+    args = await _save_workout_session(user_id, raw_args)
+    if args is None:
+        return (
+            "I wasn't quite sure how to parse that workout summary. Please include "
+            "the variant and each exercise with its weight/reps."
+        )
+    return f"Workout saved ✅ ({args.variant}, {len(args.cviky)} cvikov)"
