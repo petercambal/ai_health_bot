@@ -205,9 +205,9 @@ per-request (`_build_config()`), nie raz pri štarte:
    nehádal naslepo). Needituj bez rozmyslu, inak sa môže pokaziť tool-calling.
 2. **`_BASE_PERSONA`** — pevná, v kóde, spoločná pre všetkých používateľov: "si
    longevity expert a coach", kombinuje dáta z viacerých zdrojov s aktuálnym
-   vedeckým výskumom cez Semantic Scholar (`search_scientific_studies`), pri citácii
-   vždy uvedie autora a rok. Toto uprav priamo v `service.py`, ak chceš zmeniť
-   základný charakter/expertízu bota pre všetkých naraz.
+   vedeckým výskumom cez OpenAlex (`search_scientific_studies`), pri citácii vždy
+   uvedie autora a rok. Toto uprav priamo v `service.py`, ak chceš zmeniť základný
+   charakter/expertízu bota pre všetkých naraz.
 3. **`auth_user.system_prompt`** — voľný text s tvojím osobným profilom (výška, ciele,
    tréningový plán...), per-používateľ, uložený v DB. Nastavuje sa priamo v Telegrame:
 
@@ -224,13 +224,23 @@ vyžaduje, keďže sú v kóde).
 ### Vedecké štúdie (`search_scientific_studies`)
 
 Keď sa téma oplatí podložiť výskumom (spánok, HRV, regenerácia, tréningová záťaž,
-VO2 max, výživa, longevity...), model si sám odvodí kľúčové slová a zavolá
-Semantic Scholar API (`app/llm/studies.py`) — bez API kľúča, len s veľmi nízkym
-zdieľaným rate limitom (v testovaní padol 429 hneď na prvý request). Free kľúč
-(`SEMANTIC_SCHOLAR_API_KEY` v `.env`) dá vlastný, oveľa vyšší limit —
-[https://www.semanticscholar.org/product/api#api-key-form](https://www.semanticscholar.org/product/api#api-key-form).
-Bez neho sa nástroj len ticho vzdá (žiadne štúdie tú správu) a model to používateľovi
-transparentne povie namiesto vymyslenej citácie — to je zámer, nie chyba.
+VO2 max, výživa, longevity...), model si sám odvodí kľúčové slová a zavolá OpenAlex
+API (`app/llm/studies.py`) — funguje bez API kľúča, žiadny signup ani schvaľovanie.
+
+**Prečo OpenAlex a nie Semantic Scholar**: pôvodne bol nástroj postavený na Semantic
+Scholar, ale jeho neautentifikovaný rate limit (~100 requestov/5 min zdieľaných so
+**všetkými** neautentifikovanými volajúcimi na svete) sa v praxi ukázal ako
+nepoužiteľný — pri testovaní aj pri reálnom používaní padal takmer každý request na
+429, a vlastný API kľúč vyžaduje manuálne schválenie (komunita hlási ~5 dní čakania).
+OpenAlex je otvorená, keyless alternatíva postavená presne na tento účel — overené
+naživo 2026-09-13, funguje okamžite. Voliteľný `OPENALEX_EMAIL` v `.env` (nie API
+kľúč, len kontaktný email) zaradí requesty do "polite pool" pre spoľahlivejšiu
+službu — nevyžaduje žiadne schvaľovanie, ale nedopĺňal som ho automaticky, keďže ide
+o tvoj email a pošlú sa s ním requesty na externú službu.
+
+Ak OpenAlex predsa len zlyhá (výpadok, timeout), nástroj sa ticho vzdá (žiadne
+štúdie tú správu) a model to používateľovi transparentne povie namiesto vymyslenej
+citácie — to je zámer, nie chyba.
 
 Keďže niektoré modely (pozorované pri `gemini-3.6-flash`) vedia na širšiu otázku
 ("sprav analýzu") vydať viacero paralelných tool-callov naraz (napr. 5x
@@ -238,6 +248,28 @@ Keďže niektoré modely (pozorované pri `gemini-3.6-flash`) vedia na širšiu 
 spáruje odpovede podľa `id` volania, nie len podľa mena. Ak model chce po prvom kole
 ešte ďalšie tool cally namiesto textovej odpovede, cyklus pokračuje až do
 `_MAX_TOOL_ROUNDS` (3), potom vráti čo má, namiesto nekonečného cyklu.
+
+## Denný report (`/daily_report`)
+
+Skratka na presne tú istú otázku, akú by si mohol napísať sám — spustí sa fixný
+prompt (`_DAILY_REPORT_PROMPT` v `app/telegram/bot.py`), ktorý zhrnie včerajší deň
+naprieč **všetkými** tvojimi zaznamenanými dátami (nielen Garmin — aj váha, strava,
+prípadne glukomer, čokoľvek zapíšeš), vypichne výnimočné hodnoty s vedeckým
+vysvetlením (`search_scientific_studies`), a povie ti, či dnes trénovať naplno alebo
+poľaviť. Zatiaľ len na vyžiadanie (príkaz alebo napísať to isté vlastnými slovami) —
+automatické posielanie o 9:00 by pridalo krok do `sync_garmin_data` cronu
+(`app/scheduler.py`) volajúci `handle_user_message` s týmto promptom a poslanie
+výsledku cez `bot.send_message`, zatiaľ neimplementované.
+
+## Formátovanie správ (`app/telegram/formatting.py`)
+
+Gemini bežne generuje markdown (`### nadpisy`, `**tučné**`, `* odrážky`, `> citácie`),
+ktorý by sa v Telegrame bez úpravy zobrazil doslovne aj so znakmi `#`/`*`. Bot beží s
+`parse_mode=HTML` a `to_telegram_html()` konvertuje markdown na Telegram HTML
+podmnožinu (nadpisy → tučné, odrážky → `•`, `> citácia` → `<blockquote>`, escapuje
+`&`/`<`/`>`). `send_reply()` (v `app/telegram/bot.py`) má fallback na čistý text, ak
+by Telegram konvertovaný HTML z akéhokoľvek dôvodu odmietol ako nevalidný — chyba vo
+formátovaní nikdy nesmie zablokovať doručenie odpovede.
 
 ## CI/CD — GitHub Container Registry
 

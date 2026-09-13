@@ -102,8 +102,11 @@ _BASE_PERSONA = (
 
 # Caps the multi-call synthesis loop in _dispatch_tool_calls (see its docstring for
 # why this is a loop, not a single follow-up call). Each round is one Gemini call, so
-# this also bounds the worst-case cost/quota use of one Telegram message.
-_MAX_TOOL_ROUNDS = 3
+# this also bounds the worst-case cost/quota use of one Telegram message. Requests
+# that touch many data types plus several study searches (e.g. /daily_report) can
+# need more than a couple of rounds - if this is ever hit, _dispatch_tool_calls still
+# forces one final text-only call rather than giving up (see the end of that loop).
+_MAX_TOOL_ROUNDS = 4
 
 FALLBACK_ERROR_MESSAGE = (
     "Sorry, I couldn't process that right now. Please try rephrasing it or try "
@@ -253,10 +256,49 @@ async def _dispatch_tool_calls(
 
         contents.append(candidate.content)
 
+    # Hit the round cap with the model still wanting to call more tools. Execute
+    # those last pending calls too rather than discarding their results, then force
+    # a genuinely text-only reply: passing a config with no `tools` declared at all
+    # guarantees this, since the model has nothing left it *can* call - the
+    # tool_config mode=NONE approach tried earlier only asked the model not to call
+    # anything and it ignored that, so this leaves it no other option.
     logger.warning(
-        "Hit _MAX_TOOL_ROUNDS (%d) without a text reply (user_id=%s)", _MAX_TOOL_ROUNDS, user_id
+        "Hit _MAX_TOOL_ROUNDS (%d), forcing a text-only synthesis call (user_id=%s)",
+        _MAX_TOOL_ROUNDS,
+        user_id,
     )
-    return (response.text if response else None) or (
+    response_parts = []
+    for fc in current_calls:
+        result = await _execute_for_synthesis(user_id, fc)
+        response_parts.append(
+            types.Part(function_response=types.FunctionResponse(id=fc.id, name=fc.name, response=result))
+        )
+    contents.append(types.Content(role="user", parts=response_parts))
+    contents.append(
+        types.Content(
+            role="user",
+            parts=[
+                types.Part(
+                    text=(
+                        "Based on everything gathered so far, give your final answer now - "
+                        "do not request any more data."
+                    )
+                )
+            ],
+        )
+    )
+
+    final_config = types.GenerateContentConfig(system_instruction=config.system_instruction)
+    try:
+        response = await client.aio.models.generate_content(
+            model=settings.gemini_model, contents=contents, config=final_config
+        )
+    except Exception:
+        logger.exception("Gemini forced-synthesis call failed (user_id=%s)", user_id)
+        return FALLBACK_ERROR_MESSAGE
+
+    await _log_usage(user_id, response)
+    return response.text or (
         "I gathered some data but couldn't finish putting together an answer. "
         "Try asking about a narrower period or a specific metric."
     )

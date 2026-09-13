@@ -1,14 +1,16 @@
-"""Semantic Scholar lookup backing the search_scientific_studies tool - lets the bot
-ground longevity/health answers in current peer-reviewed research instead of relying
-only on the model's own (possibly stale or hallucinated) recollection of studies.
+"""OpenAlex lookup backing the search_scientific_studies tool - lets the bot ground
+longevity/health answers in current peer-reviewed research instead of relying only on
+the model's own (possibly stale or hallucinated) recollection of studies.
 
-The public Semantic Scholar Graph API works without a key, but its unauthenticated
-rate limit is a single small pool shared across every unauthenticated caller
-worldwide, and is very easy to exhaust (observed a 429 on the very first request
-during development, with no prior traffic from this app). Get a free key at
-https://www.semanticscholar.org/product/api#api-key-form and set
-SEMANTIC_SCHOLAR_API_KEY in .env for a dedicated, far higher limit - otherwise expect
-this tool to fail gracefully (empty results) fairly often.
+Originally built against Semantic Scholar's Graph API, but its unauthenticated rate
+limit (~100 requests/5min shared across every unauthenticated caller worldwide) proved
+unusable in practice - every single request during development and initial real usage
+came back 429, and a dedicated key requires manual approval (community reports ~5 day
+turnaround). OpenAlex is a fully open, keyless-by-default alternative built for
+exactly this kind of use case, verified working live on 2026-09-13: instant 200 OK, no
+signup. An optional `mailto` contact (OPENALEX_EMAIL in .env) puts requests in
+OpenAlex's "polite pool" for more reliable service - not an API key, just a courtesy
+identifier, no approval needed.
 """
 
 import logging
@@ -19,49 +21,51 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-_SEARCH_URL = "https://api.semanticscholar.org/graph/v1/paper/search"
-_FIELDS = "title,authors,year,abstract,url,venue"
+_SEARCH_URL = "https://api.openalex.org/works"
+_SELECT_FIELDS = "title,publication_year,doi,authorships,primary_location"
 _TIMEOUT = aiohttp.ClientTimeout(total=10)
 
 
 async def search_studies(query: str, limit: int = 5) -> list[dict]:
-    """Returns [{title, authors, year, venue, url, abstract}, ...], or an empty list
-    on any failure (rate limit, timeout, network error) - callers should treat that
-    as "no studies found this time" and let Gemini answer without citations, not as
-    a hard error, since the free tier of this API is unreliable by nature."""
-    headers = {}
-    if settings.semantic_scholar_api_key:
-        headers["x-api-key"] = settings.semantic_scholar_api_key
+    """Returns [{title, authors, year, venue, url}, ...], or an empty list on any
+    failure (rate limit, timeout, network error) - callers should treat that as "no
+    studies found this time" and let Gemini answer without citations, not as a hard
+    error."""
+    params = {"search": query, "per-page": str(limit), "select": _SELECT_FIELDS}
+    if settings.openalex_email:
+        params["mailto"] = settings.openalex_email
 
-    params = {"query": query, "fields": _FIELDS, "limit": str(limit)}
     try:
         async with (
             aiohttp.ClientSession(timeout=_TIMEOUT) as session,
-            session.get(_SEARCH_URL, params=params, headers=headers) as resp,
+            session.get(_SEARCH_URL, params=params) as resp,
         ):
             if resp.status != 200:
                 logger.warning(
-                    "Semantic Scholar search failed (status=%s) for query=%r", resp.status, query
+                    "OpenAlex search failed (status=%s) for query=%r", resp.status, query
                 )
                 return []
             data = await resp.json()
     except Exception:
-        logger.exception("Semantic Scholar search request failed for query=%r", query)
+        logger.exception("OpenAlex search request failed for query=%r", query)
         return []
 
-    papers = data.get("data") or []
+    works = data.get("results") or []
     results = []
-    for paper in papers:
-        authors = [a.get("name") for a in (paper.get("authors") or []) if a.get("name")]
-        abstract = paper.get("abstract") or ""
+    for work in works:
+        authors = [
+            (a.get("author") or {}).get("display_name")
+            for a in (work.get("authorships") or [])
+            if (a.get("author") or {}).get("display_name")
+        ]
+        source = ((work.get("primary_location") or {}).get("source")) or {}
         results.append(
             {
-                "title": paper.get("title"),
+                "title": work.get("title"),
                 "authors": authors,
-                "year": paper.get("year"),
-                "venue": paper.get("venue"),
-                "url": paper.get("url"),
-                "abstract": abstract[:500] or None,
+                "year": work.get("publication_year"),
+                "venue": source.get("display_name"),
+                "url": work.get("doi"),
             }
         )
     return results

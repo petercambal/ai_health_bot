@@ -143,7 +143,7 @@ _SEARCH_STUDIES_SCHEMA = types.Schema(
         "query": types.Schema(
             type=types.Type.STRING,
             description=(
-                "Search keywords for peer-reviewed research on Semantic Scholar, e.g. "
+                "Search keywords for peer-reviewed research on OpenAlex, e.g. "
                 "'HRV sleep recovery' or 'VO2 max training longevity'. Derive these from "
                 "the health topic the user is asking about, not their literal wording."
             ),
@@ -192,7 +192,7 @@ GEMINI_TOOL = types.Tool(
         types.FunctionDeclaration(
             name=SEARCH_STUDIES,
             description=(
-                "Search Semantic Scholar for peer-reviewed scientific studies on a "
+                "Search OpenAlex for peer-reviewed scientific studies on a "
                 "health/longevity topic. Call this when discussing something worth "
                 "grounding in current research (e.g. sleep, HRV, recovery, training "
                 "load, VO2 max, nutrition, longevity). Always cite the author(s) and "
