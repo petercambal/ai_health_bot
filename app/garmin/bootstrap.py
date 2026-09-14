@@ -1,10 +1,10 @@
 """One-time interactive Garmin login: uv run python -m app.garmin.bootstrap <telegram_id>
 
 Prompts for email/password/MFA at the terminal, then stores ONLY the resulting
-session token in the DB (garmin_account.session_json) - the password never touches
-disk or the database. Every subsequent sync (cron or Telegram-triggered) reuses that
-stored session and never asks for credentials again, unless it's later revoked or
-expires, in which case re-run this script.
+session token in the DB (integrations.credentials, service='garmin') - the password
+never touches disk or the database. Every subsequent sync (cron or Telegram-triggered)
+reuses that stored session and never asks for credentials again, unless it's later
+revoked or expires, in which case re-run this script.
 """
 
 import argparse

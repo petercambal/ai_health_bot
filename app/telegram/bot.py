@@ -2,7 +2,7 @@ import asyncio
 import logging
 import re
 from contextlib import asynccontextmanager, suppress
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from aiogram import Bot, Dispatcher, Router
 from aiogram.client.default import DefaultBotProperties
@@ -13,6 +13,7 @@ from aiogram.types import BotCommand, Message
 
 from app import database
 from app.config import settings
+from app.integrations import ensure_day_synced
 from app.link_token import generate_link_token
 from app.llm import pricing as token_pricing
 from app.llm.service import handle_user_message
@@ -125,7 +126,9 @@ async def on_daily_report(message: Message) -> None:
     if telegram_id is None:
         return
 
+    yesterday = datetime.now(UTC).date() - timedelta(days=1)
     async with _typing_indicator(message.chat.id):
+        await ensure_day_synced(telegram_id, yesterday)
         reply = await handle_user_message(user_id=telegram_id, text=_DAILY_REPORT_PROMPT)
     await send_reply(message, reply)
 
