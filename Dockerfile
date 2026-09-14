@@ -8,6 +8,7 @@ COPY pyproject.toml ./
 RUN uv sync --no-install-project --no-dev
 
 COPY app ./app
+COPY README.md ./
 
 RUN uv sync --no-dev
 
