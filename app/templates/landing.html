@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="robots" content="noindex" />
+  <title>Health Tracker — your longevity coach on Telegram</title>
+  <style>
+    :root {
+      --ink: #1a1a1a;
+      --muted: #5b5f66;
+      --line: #e8e8ec;
+      --bg: #f7f7f9;
+      --card: #ffffff;
+      --accent: #3b82f6;
+      --accent-dark: #2563eb;
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: system-ui, sans-serif; margin: 0; background: var(--bg); color: var(--ink);
+      line-height: 1.6;
+    }
+    .wrap { max-width: 760px; margin: 0 auto; padding: 0 1.25rem; }
+
+    header.hero {
+      background: linear-gradient(160deg, #111827 0%, #1e3a5f 100%);
+      color: white; padding: 4rem 0 3.5rem;
+    }
+    header.hero .wrap { text-align: center; }
+    .eyebrow {
+      text-transform: uppercase; letter-spacing: 0.08em; font-size: 0.75rem;
+      color: #93c5fd; font-weight: 600; margin-bottom: 0.75rem;
+    }
+    header.hero h1 { font-size: 2rem; margin: 0 0 0.75rem; }
+    header.hero p.tagline { font-size: 1.05rem; color: #cbd5e1; max-width: 32rem; margin: 0 auto 2rem; }
+
+    .cta {
+      display: inline-block; background: var(--accent); color: white; text-decoration: none;
+      font-weight: 600; padding: 0.85rem 1.75rem; border-radius: 999px; font-size: 1rem;
+      transition: background 0.15s ease;
+    }
+    .cta:hover { background: var(--accent-dark); }
+    .cta-secondary {
+      display: block; margin-top: 0.75rem; font-size: 0.85rem; color: #93c5fd; text-decoration: none;
+    }
+
+    main { padding: 3rem 0 1rem; }
+    section { margin-bottom: 3rem; }
+    h2 { font-size: 1.4rem; margin-bottom: 0.5rem; }
+    p.lead { color: var(--muted); font-size: 1.02rem; }
+
+    .steps { list-style: none; margin: 1.5rem 0 0; padding: 0; display: grid; gap: 1rem; }
+    .steps li {
+      background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+      padding: 1rem 1.25rem; display: flex; gap: 0.9rem; align-items: flex-start;
+    }
+    .steps .n {
+      flex: none; width: 1.75rem; height: 1.75rem; border-radius: 50%; background: var(--accent);
+      color: white; font-size: 0.85rem; font-weight: 700; display: flex; align-items: center;
+      justify-content: center;
+    }
+    .steps .txt strong { display: block; margin-bottom: 0.15rem; }
+    .steps .txt span { color: var(--muted); font-size: 0.92rem; }
+
+    .examples { margin-top: 1.25rem; display: grid; gap: 0.6rem; }
+    .examples .msg {
+      background: var(--card); border: 1px solid var(--line); border-radius: 14px;
+      padding: 0.6rem 1rem; font-size: 0.92rem; max-width: 26rem; color: var(--ink);
+    }
+
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1.5rem; }
+    @media (max-width: 620px) { .grid { grid-template-columns: 1fr; } }
+    .card {
+      background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 1.25rem;
+    }
+    .card .icon { font-size: 1.4rem; margin-bottom: 0.4rem; }
+    .card h3 { font-size: 1rem; margin: 0 0 0.35rem; }
+    .card p { margin: 0; color: var(--muted); font-size: 0.92rem; }
+
+    .note {
+      background: #fffbeb; border: 1px solid #fde68a; border-radius: 10px; padding: 1rem 1.25rem;
+      font-size: 0.92rem; color: #78350f;
+    }
+
+    footer { border-top: 1px solid var(--line); padding: 2rem 0 3rem; text-align: center; color: var(--muted); font-size: 0.85rem; }
+    footer a { color: var(--accent); }
+  </style>
+</head>
+<body>
+  <header class="hero">
+    <div class="wrap">
+      <div class="eyebrow">Personal health assistant</div>
+      <h1>Talk to it like a coach.<br>It remembers everything.</h1>
+      <p class="tagline">
+        A Telegram bot that logs your health data, syncs your wearables, and gives you
+        a daily report grounded in real scientific research — no forms, no apps to open,
+        just a chat.
+      </p>
+      <a class="cta" href="https://t.me/ai_health_track_bot" target="_blank" rel="noopener">Open in Telegram →</a>
+      <a class="cta-secondary" href="https://t.me/ai_health_track_bot" target="_blank" rel="noopener">@ai_health_track_bot</a>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <section>
+      <h2>What it does</h2>
+      <p class="lead">
+        It's a private, AI-powered health log that lives entirely inside Telegram.
+        You tell it what happened — a workout, a meal, your weight — and it stores it.
+        Ask it a question about your own data and it answers using your actual history,
+        not guesses. Every morning it puts the picture together for you: how yesterday
+        went, what stood out, and whether to push hard today or take it easier.
+      </p>
+    </section>
+
+    <section>
+      <h2>How it works</h2>
+      <p class="lead">There are no rigid commands to memorize — just write normally.</p>
+      <ul class="steps">
+        <li>
+          <span class="n">1</span>
+          <span class="txt"><strong>You write a message.</strong>
+          <span>In plain language — whatever you'd naturally say to a coach.</span></span>
+        </li>
+        <li>
+          <span class="n">2</span>
+          <span class="txt"><strong>It figures out what you mean.</strong>
+          <span>An AI model (Gemini) reads the message and decides what to do — save a
+          record, look up your history, sync a device, or search current research —
+          there's no fixed menu it's limited to.</span></span>
+        </li>
+        <li>
+          <span class="n">3</span>
+          <span class="txt"><strong>It remembers you specifically.</strong>
+          <span>Your own goals, stats, and training plan (set once via
+          <code>/system_prompt</code>) shape every answer after that.</span></span>
+        </li>
+      </ul>
+      <div class="examples">
+        <div class="msg">"I weighed myself today, 88kg"</div>
+        <div class="msg">"How has my sleep been this week?"</div>
+        <div class="msg">"Sync my Garmin data from yesterday"</div>
+        <div class="msg">"I want to do Variant 1 today"</div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Integrations</h2>
+      <p class="lead">It pulls from more than one source, so the daily picture is actually complete.</p>
+      <div class="grid">
+        <div class="card">
+          <div class="icon">⌚</div>
+          <h3>Garmin Connect</h3>
+          <p>Steps, sleep, heart rate, HRV, SpO2, body battery, training readiness, and
+          activities — synced automatically every morning, or on request.</p>
+        </div>
+        <div class="card">
+          <div class="icon">🍽️</div>
+          <h3>Nutrition diary</h3>
+          <p>Connects to your kaloricketabulky.sk food log — calories, protein, carbs,
+          fat, and the individual meals behind them.</p>
+        </div>
+        <div class="card">
+          <div class="icon">🏋️</div>
+          <h3>Workout logging</h3>
+          <p>Ask for your last session of a given routine, get weight/rep suggestions
+          based on it, and log the results back when you're done.</p>
+        </div>
+        <div class="card">
+          <div class="icon">📚</div>
+          <h3>Real science, cited</h3>
+          <p>When a topic is worth grounding in research (sleep, HRV, training load...),
+          it searches peer-reviewed studies and cites the author and year — or says
+          plainly when it found nothing, instead of making something up.</p>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Your morning report</h2>
+      <p class="lead">
+        Every day at 9:00, before you've even asked, it pulls together everything from
+        the day before — training, sleep, food, anything you logged — flags anything
+        unusual, and tells you in a couple of sentences whether today's a green light or
+        a day to ease off. You can also just ask for it any time with
+        <code>/daily_report</code>.
+      </p>
+    </section>
+
+    <section>
+      <div class="note">
+        This is a private project, not a public product — access is by invitation only.
+        If you don't already have access and message the bot, it'll let you know.
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    Built with Telegram, Gemini, and PostgreSQL. ·
+    <a href="https://t.me/ai_health_track_bot" target="_blank" rel="noopener">Open the bot</a>
+  </footer>
+</body>
+</html>

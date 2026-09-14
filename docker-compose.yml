@@ -24,8 +24,25 @@ services:
   app:
     build: .
     restart: unless-stopped
-    env_file:
-      - .env
+    environment:
+      # Telegram
+      TELEGRAM_BOT_TOKEN: "123456:ABC-DEF..."
+      TELEGRAM_WEBHOOK_BASE_URL: "https://your-domain.com"
+      TELEGRAM_WEBHOOK_SECRET: "change-me"
+
+      # Gemini
+      GEMINI_API_KEY: "your-gemini-api-key"
+      GEMINI_MODEL: "gemini-3.6-flash"
+
+      # Optional: courtesy contact for OpenAlex's "polite pool" (search_scientific_studies) -
+      # not an API key, works fine left blank.
+      OPENALEX_EMAIL: ""
+
+      # Existing Postgres (e.g. the NAS's own instance, not a container this compose file starts)
+      DATABASE_URL: "postgresql://<user>:<password>@<host>:<port>/<dbname>"
+
+      # App
+      LOG_LEVEL: "INFO"
     ports:
       - "8000:8000"
 

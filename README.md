@@ -1,304 +1,335 @@
 # Telegram-LLM Health Tracker & Dashboard
 
-Jedno-procesová async Python aplikácia: Telegram bot (webhook) → Gemini (function
-calling) → PostgreSQL, plus jednoduchý FastAPI/Jinja2 dashboard s Chart.js.
+A single-process async Python application: Telegram bot (webhook) → Gemini (function
+calling) → PostgreSQL, plus a simple FastAPI/Jinja2 dashboard with Chart.js.
 
-## Vrstvy
+## Layers
 
 - `app/main.py` — FastAPI app, `lifespan` (DB pool, webhook, scheduler)
-- `app/config.py` — nastavenia z `.env` (pydantic-settings)
-- `app/database.py` — asyncpg pool + query funkcie nad `health_records` a `auth_user`
-- `app/llm/` — Gemini klient, tool schémy (`tools.py`), routovacia logika (`service.py`)
-- `app/telegram/` — aiogram `Bot`/`Dispatcher` vo webhook móde, kontrola `auth_user`
+- `app/config.py` — settings from `.env` (pydantic-settings)
+- `app/database.py` — asyncpg pool + query functions over `health_records` and `auth_user`
+- `app/llm/` — Gemini client, tool schemas (`tools.py`), routing logic (`service.py`)
+- `app/telegram/` — aiogram `Bot`/`Dispatcher` in webhook mode, `auth_user` check
 - `app/routers/` — `telegram.py` (webhook endpoint), `dashboard.py` (`/dashboard`, `/api/stats`)
-- `app/garmin/` — `sync.py` (sťahovanie a ukladanie denného Garmin digestu, catch-up),
-  `bootstrap.py` (jednorazové interaktívne prihlásenie)
-- `app/scheduler.py` — `AsyncIOScheduler`, denná úloha `sync_garmin_data` o 09:00
-- `db/init.sql` — DDL pre `auth_user`, `health_records`, `garmin_account`
+- `app/garmin/` — `sync.py` (fetching and storing the daily Garmin digest, catch-up),
+  `bootstrap.py` (one-time interactive login)
+- `app/scheduler.py` — `AsyncIOScheduler`, daily jobs at 09:00 (Garmin sync, nutrition
+  sync, daily report push)
+- `db/init.sql` — DDL for `auth_user`, `health_records`, `integrations`, `token_usage`
 
-## Databáza
+## Database
 
-Všetky tabuľky žijú vo vlastnej Postgres schéme **`health_tracker`** (nie `public`) —
-DB na NASe je zdieľaná s inými projektmi, takto sa vyhneme kolízii názvov tabuliek.
-Schéma sa nastavuje ako `server_settings={"search_path": ...}` pri vytváraní
-`asyncpg` poolu (`app/database.py`, `SCHEMA` konštanta) — **nie** cez obyčajný
-`SET search_path`, lebo ten by asyncpg po vrátení spojenia do poolu vždy vynuloval
-príkazom `RESET ALL`. Meno schémy musí byť zhodné v `db/init.sql` aj `app/database.py`.
+All tables live in their own Postgres schema, **`health_tracker`** (not `public`) —
+the DB on the NAS is shared with other projects, so this avoids table-name
+collisions. The schema is set via `server_settings={"search_path": ...}` when the
+`asyncpg` pool is created (`app/database.py`, the `SCHEMA` constant) — **not** via a
+plain `SET search_path`, since asyncpg always resets that with `RESET ALL` when a
+connection is returned to the pool. The schema name must match in both
+`db/init.sql` and `app/database.py`.
 
-Appka defaultne očakáva **existujúce** PostgreSQL na NASe (nie lokálny kontajner) —
-`docker-compose.yml` už nespúšťa vlastné Postgres, len appku. `DATABASE_URL` v `.env`
-smeruje priamo tam:
+By default the app expects an **existing** PostgreSQL on the NAS (not a local
+container) — `docker-compose.yml` no longer starts its own Postgres, just the app.
+`DATABASE_URL` (in `.env` when running via `uv`, or in `docker-compose.override.yml`
+when running via Docker — see below) points directly at it:
 
 ```
 DATABASE_URL=postgresql://<user>:<password>@192.168.1.229:15432/<dbname>
 ```
 
-Pred prvým spustením treba na tejto DB jednorazovo vytvoriť tabuľky z
-[db/init.sql](db/init.sql) (obsahuje `CREATE TABLE IF NOT EXISTS`, takže sa dá pustiť
-opakovane bez rizika):
+Before the first run, the tables need to be created once on this DB from
+[db/init.sql](db/init.sql) (it uses `CREATE TABLE IF NOT EXISTS`, so it's safe to
+run repeatedly):
 
 ```bash
 psql "postgresql://<user>:<password>@192.168.1.229:15432/<dbname>" -f db/init.sql
 ```
 
-Ak by si niekedy potreboval lokálny Postgres (napr. vývoj mimo NAS siete), je
-pripravený ako voliteľný profil, nespúšťa sa defaultne:
+If you ever need a local Postgres (e.g. developing away from the NAS network), it's
+available as an optional profile and doesn't start by default:
 
 ```bash
 docker compose --profile local-db up -d db
 ```
 
-## Lokálny beh
+## Running locally
 
-1. `cp .env.example .env` a doplň `TELEGRAM_BOT_TOKEN`, `GEMINI_API_KEY`,
-   `TELEGRAM_WEBHOOK_BASE_URL` (verejná HTTPS URL, napr. z ngrok/cloudflared),
-   `TELEGRAM_WEBHOOK_SECRET` a `DATABASE_URL` (NAS DB, viď vyššie).
+`docker-compose.yml` is checked into git, so the `app` service's `environment:`
+only has placeholder values (real secrets never belong there). Real values go into
+`docker-compose.override.yml` (gitignored), which Compose automatically merges on
+top:
+
+1. `cp docker-compose.override.yml.example docker-compose.override.yml` and fill in
+   `TELEGRAM_BOT_TOKEN`, `GEMINI_API_KEY`, `TELEGRAM_WEBHOOK_BASE_URL` (a public
+   HTTPS URL, e.g. from ngrok/cloudflared), `TELEGRAM_WEBHOOK_SECRET`, and
+   `DATABASE_URL` (the NAS DB, see above).
 2. `docker compose up --build`
-3. Dashboard: `http://localhost:8000/dashboard?user_id=<tvoje_telegram_id>`
+3. Dashboard: `http://localhost:8000/dashboard?user_id=<your_telegram_id>`
 
-## Bez Dockeru (uv)
+On the NAS (Portainer/Container Manager), instead of `docker-compose.override.yml`
+you can just put the same variables directly into the project's `environment:` in
+the UI, or replace the placeholder values directly in the `docker-compose.yml` you
+paste there (that copy never goes back into git).
+
+## Without Docker (uv)
 
 ```bash
 uv sync
 uv run uvicorn app.main:app --reload
 ```
 
-## Lokálny vývoj s reálnym Telegram webhookom (bez rebuildu image)
+## Local development with a real Telegram webhook (without rebuilding the image)
 
-Na NASe pôjde appka za reverse proxy, ale kým vyvíjaš lokálne, nemusíš pri každej
-zmene stavať Docker image — appka beží natívne s `--reload` a webhook ide cez tunel:
+On the NAS the app runs behind a reverse proxy, but while developing locally you
+don't need to build a Docker image for every change — the app runs natively with
+`--reload` and the webhook goes through a tunnel:
 
-1. `.env` má `DATABASE_URL` smerujúce priamo na NAS DB (`192.168.1.229:15432`) — platí
-   to isté, či appku spúšťaš cez Docker alebo natívne, žiadna zmena netreba.
-2. Spusti tunel, napr. `ngrok http 8000` (alebo `cloudflared tunnel --url http://localhost:8000`).
-   Dostaneš HTTPS URL typu `https://abc123.ngrok-free.app`.
-3. Daj túto URL do `.env` ako `TELEGRAM_WEBHOOK_BASE_URL`.
-4. Spusti appku: `uv run uvicorn app.main:app --reload` — pri štarte sa webhook
-   zaregistruje na Telegrame s touto URL.
-5. Píš botovi v Telegrame — správy chodia cez tunel na tvoj lokálny bežiaci proces;
-   `--reload` zachytí každú zmenu kódu bez reštartu appky (netreba ani reštart kvôli
-   webhooku, ten sa registruje len raz pri štarte procesu).
+1. `.env` has `DATABASE_URL` pointing directly at the NAS DB (`192.168.1.229:15432`)
+   — this is the same whether you run the app via Docker or natively, no change
+   needed.
+2. Start a tunnel, e.g. `ngrok http 8000` (or
+   `cloudflared tunnel --url http://localhost:8000`). You'll get an HTTPS URL like
+   `https://abc123.ngrok-free.app`.
+3. Put this URL into `.env` as `TELEGRAM_WEBHOOK_BASE_URL`.
+4. Start the app: `uv run uvicorn app.main:app --reload` — on startup the webhook
+   gets registered with Telegram using this URL.
+5. Message the bot in Telegram — messages come through the tunnel to your locally
+   running process; `--reload` picks up every code change without restarting the
+   app (no restart is needed for the webhook either, it's only registered once at
+   process startup).
 
-Pozor: free ngrok URL sa mení pri každom reštarte tunela — ak tunel reštartuješ, uprav
-`TELEGRAM_WEBHOOK_BASE_URL` a reštartni aj `uvicorn`, nech sa webhook prehlási na novú
-URL.
+Note: the free ngrok URL changes every time the tunnel restarts — if you restart the
+tunnel, update `TELEGRAM_WEBHOOK_BASE_URL` and restart `uvicorn` too, so the webhook
+re-registers with the new URL.
 
-### Automatizovane cez `scripts/dev_with_tunnel.sh`
+### Automated via `scripts/dev_with_tunnel.sh`
 
-Kroky 2-4 vyššie robí za teba tento skript — reštartuje cloudflared tunel, počká na
-DNS resolúciu novej `trycloudflare.com` URL (cloudflared ju vypíše skôr, než je
-reálne dostupná — priamy `set_webhook` hneď po štarte by inak padal na "Failed to
-resolve host"), zapíše ju do `.env` a spustí appku:
+This script does steps 2-4 above for you — it restarts the cloudflared tunnel,
+waits for the new `trycloudflare.com` URL to become DNS-resolvable (cloudflared
+prints it before it's actually reachable — calling `set_webhook` right after
+startup would otherwise fail with "Failed to resolve host"), writes it into `.env`,
+and starts the app:
 
 ```bash
 ./scripts/dev_with_tunnel.sh
 ```
 
-Zámerne beží **bez** `--reload` — pri páde appky počas štartu (napr. práve tá DNS
-race) vie reloader proces prežiť a držať port 8000 obsadený aj po ukončení skriptu.
-Na PyCharm to vieš napojiť ako samostatnú **Shell Script** run konfiguráciu
-(Script path: `scripts/dev_with_tunnel.sh`) — Start spustí celý flow, Stop pošle
-`SIGTERM` a skript korektne ukončí aj appku aj tunel (žiadny osamotený proces).
-Pôvodnú Start/Debug konfiguráciu s `--reload` nechaj bokom pre rýchle iterovanie kódu
-bez tunela.
+Deliberately runs **without** `--reload` — if the app crashes during startup (e.g.
+exactly that DNS race), the reloader process can survive and keep port 8000 held
+even after the script ends. In PyCharm you can wire this up as a separate
+**Shell Script** run configuration (Script path: `scripts/dev_with_tunnel.sh`) —
+Start runs the whole flow, Stop sends `SIGTERM` and the script cleanly shuts down
+both the app and the tunnel (no orphaned process). Keep the original Start/Debug
+configuration with `--reload` around for fast code iteration without a tunnel.
 
-## Autorizácia používateľov (`auth_user`)
+## User authorization (`auth_user`)
 
-Bot odpovie iba `telegram_id`, ktoré je v tabuľke `auth_user` a má `is_active = TRUE`;
-ostatným pošle "Nemáš prístup" a request zaloguje (`app/telegram/bot.py`). Toto je
-nezávislé od `TELEGRAM_WEBHOOK_SECRET`, ktorý len overuje, že samotný webhook request
-prišiel z Telegramu — nič nehovorí o tom, ktorý konkrétny Telegram účet smie s botom
-písať.
+The bot only replies to a `telegram_id` that's in the `auth_user` table with
+`is_active = TRUE`; everyone else gets "You don't have access" and the request is
+logged (`app/telegram/bot.py`). This is independent of `TELEGRAM_WEBHOOK_SECRET`,
+which only verifies that the webhook request itself came from Telegram — it says
+nothing about which specific Telegram account is allowed to talk to the bot.
 
-Pridanie povoleného používateľa (zisti si vlastné `telegram_id` napr. cez `@userinfobot`):
+Adding an allowed user (find your own `telegram_id` e.g. via `@userinfobot`):
 
 ```sql
 INSERT INTO auth_user (telegram_id, display_name) VALUES (123456789, 'Peter');
 ```
 
-alebo programaticky cez `app.database.add_auth_user(telegram_id, display_name)`.
+or programmatically via `app.database.add_auth_user(telegram_id, display_name)`.
 
 ## Garmin Connect sync (`app/garmin/`)
 
-Tretí Gemini nástroj popri `insert_health_record`/`get_health_records`:
-`sync_garmin_day` — keď napíšeš botovi napr. "stiahni Garmin dáta za včera", Gemini
-zavolá tento tool, appka stiahne dáta z Garmin Connect a uloží ich.
+A third Gemini tool alongside `insert_health_record`/`get_health_records`:
+`sync_garmin_day` — when you tell the bot e.g. "fetch yesterday's Garmin data",
+Gemini calls this tool, the app fetches the data from Garmin Connect and stores it.
 
-**Ako funguje autentifikácia** — heslo sa nikdy neukladá, ani do `.env`, ani do DB:
+**How authentication works** — the password is never stored, not in `.env`, not in
+the DB:
 
-1. Jednorazovo, interaktívne (kvôli MFA) spustíš pre každého používateľa/kamaráta:
+1. One-time, interactively (because of MFA), you run this for each user/friend:
    ```bash
    uv run python -m app.garmin.bootstrap <telegram_id>
    ```
-   Vypýta si Garmin email/heslo/MFA kód priamo v termináli, prihlási sa, a do
-   tabuľky `garmin_account` (naviazanej na `auth_user.telegram_id`) uloží **iba**
-   serializovaný session token (`garminconnect`'s `client.dumps()`/`loads()`) —
-   heslo skončí len v pamäti tohto jedného behu skriptu a nikam sa nezapíše.
-2. Odvtedy `sync_day()`/`sync_catch_up()` (`app/garmin/sync.py`) session z DB
-   načítajú a prihlásia sa ňou (`Garmin().login(tokenstore=session_json)`) — bez
-   hesla, bez MFA. Po každom behu sa (prípadne obnovený/refreshnutý) token uloží
-   späť do DB.
-3. Ak token prestane platiť (napr. dlhodobo nepoužívaný refresh token), appka
-   vráti jasnú chybu s inštrukciou znova spustiť bootstrap — nikdy sa sama
-   nepokúsi prihlásiť menom/heslom (žiadne heslo nemá k dispozícii).
+   It asks for the Garmin email/password/MFA code right there in the terminal, logs
+   in, and stores **only** the serialized session token (`garminconnect`'s
+   `client.dumps()`/`loads()`) into the `integrations` table (`service='garmin'`,
+   tied to `auth_user.telegram_id`) — the password only ever lives in the memory of
+   this one script run and is never written anywhere.
+2. From then on, `sync_day()`/`sync_catch_up()` (`app/garmin/sync.py`) load the
+   session from the DB and log in with it (`Garmin().login(tokenstore=session_json)`)
+   — no password, no MFA. After every run, the (possibly renewed/refreshed) token
+   is saved back to the DB.
+3. If the token stops working (e.g. a refresh token unused for too long), the app
+   returns a clear error instructing you to run the bootstrap again — it never
+   tries to log in with a username/password itself (it doesn't have a password
+   available).
 
-Tento dizajn prirodzene podporuje viac ľudí: každý kamarát má vlastný riadok v
-`garmin_account`, vlastný Garmin účet, vlastnú históriu v `health_records`
+This design naturally supports multiple people: each friend has their own row in
+`integrations`, their own Garmin account, their own history in `health_records`
 (`typ='garmin_daily'`).
 
-**Prepojenie cez web namiesto terminálu** — pre kohokoľvek bez prístupu k
-terminálu (napr. kamaráti) existuje aj webový flow: napíš botovi v Telegrame
-`/garmin_link` a dostaneš späť odkaz na `/garmin-login?token=...`
-(`app/routers/garmin_login.py`). Token je podpísaný HMAC-om (`app/garmin/link_token.py`,
-kľúč = `TELEGRAM_WEBHOOK_SECRET`), viazaný na tvoje `telegram_id` a platí 30 minút —
-appka teda nikde nevystavuje surové `user_id` v URL, ktoré by niekto mohol uhádnuť
-alebo použiť pre cudzí účet. Formulár prevedie cez email/heslo a prípadný MFA krok
-presne tak ako CLI bootstrap, a rovnako neukladá heslo, iba výsledný session token.
+**Linking via the web instead of the terminal** — for anyone without terminal
+access (e.g. friends), there's also a web flow: message the bot `/garmin_link` in
+Telegram and you get back a link to `/garmin-login?token=...`
+(`app/routers/garmin_login.py`). The token is HMAC-signed (`app/link_token.py`, key
+= `TELEGRAM_WEBHOOK_SECRET`), scoped to your `telegram_id`, and valid for 30 minutes
+— so the app never exposes a raw `user_id` in a URL that someone could guess or use
+for someone else's account. The form walks you through email/password and any MFA
+step exactly like the CLI bootstrap, and likewise never stores the password, only
+the resulting session token.
 
-**Denné dáta** sa ukladajú ako jeden JSONB "digest" objekt na deň (kroky,
-vzdialenosť, kalórie, tep, spánok, HRV, SpO2, body battery, tréningová
-pripravenosť, hydratácia, zoznam aktivít) — nie per-minútové intraday série ani
-lapy, aby záznam ostal kompaktný; dá sa ľahko rozšíriť, ak by si to chcel. Pri
-každom sync-i pre daný deň sa **existujúci záznam zmaže a nahradí** novým
-(`database.replace_health_record_for_day`), takže opakovaný sync toho istého dňa
-nič neduplikuje.
+**Daily data** is stored as a single JSONB "digest" object per day (steps,
+distance, calories, heart rate, sleep, HRV, SpO2, body battery, training readiness,
+hydration, activity list) — not per-minute intraday series or laps, to keep the
+record compact; easy to extend if you want. On every sync for a given day, the
+**existing record is deleted and replaced** with a new one
+(`database.replace_health_record_for_day`), so re-syncing the same day never
+duplicates anything.
 
-**Cron** o 09:00 (`app/scheduler.py`) prebehne všetkých používateľov s riadkom v
-`garmin_account` a pre každého dobehne (catch-up) všetky dni od posledného
-synchronizovaného dňa po **včerajšok** (dnešok o 9:00 by bol ešte neúplný, napr.
-spánok cez noc), max `MAX_RANGE_DAYS` (31) dní za jeden beh — pri dlhšom výpadku sa
-dobehne postupne cez viacero dní/cronov, nie v jednom veľkom nápore.
+**A cron job** at 09:00 (`app/scheduler.py`) goes through every user with a linked
+Garmin account and, for each, catches up every day from their last synced day
+through **yesterday** (today at 9:00 would still be incomplete, e.g. overnight
+sleep), up to `MAX_RANGE_DAYS` (31) days per run — after a longer outage it catches
+up gradually over several days/cron runs rather than in one big burst.
 
-**Rozsah dní naraz** — popri `sync_garmin_day` (jeden deň) existuje aj
-`sync_garmin_range` (`start_date`, `end_date`, max **31 dní** naraz,
-`app/garmin/sync.py`), na inicializáciu histórie bez ručného volania po dňoch. V
-Telegrame stačí napr. "stiahni Garmin dáta od 1.8. do 31.8." — Gemini zvolí správny
-nástroj. Oba nástroje aj `sync_catch_up` teraz zdieľajú jednu funkciu
-(`sync_range()`), ktorá sa do Garminu prihlási **raz** pre celý rozsah (nie raz na
-deň ako predtým) — rýchlejšie a menej náchylné na Garmin rate-limiting.
+**Multi-day ranges** — alongside `sync_garmin_day` (one day), there's also
+`sync_garmin_range` (`start_date`, `end_date`, max **31 days** at once,
+`app/garmin/sync.py`), for initializing history without calling day by day. In
+Telegram it's enough to say e.g. "fetch Garmin data from Aug 1 to Aug 31" — Gemini
+picks the right tool. Both tools and `sync_catch_up` now share one function
+(`sync_range()`), which logs into Garmin **once** for the whole range (not once per
+day as before) — faster and less prone to Garmin rate-limiting.
 
 ## Token usage audit (`token_usage`)
 
-Každé volanie Gemini API (jedna Telegram správa môže spustiť dve — pôvodné a
-follow-up, keď `get_health_records` vracia dáta späť modelu) sa zaloguje do
-`health_tracker.token_usage`: `user_id`, čas, model, `prompt_tokens`,
+Every Gemini API call (one Telegram message can trigger two — the original and a
+follow-up, when `get_health_records` feeds data back to the model) is logged to
+`health_tracker.token_usage`: `user_id`, timestamp, model, `prompt_tokens`,
 `response_tokens`, `total_tokens` (`app/llm/service.py` → `_log_usage()`,
-best-effort — zlyhanie logovania nikdy nezhodí samotnú odpoveď bota).
+best-effort — a logging failure never breaks the bot's actual reply).
 
-**`/tokens [RRRR-MM]`** v Telegrame ukáže mesačný súhrn (bez argumentu aktuálny
-mesiac) — počet volaní, tokeny a odhad ceny v USD podľa `app/llm/pricing.py`
-(hand-maintained cenník USD/1M tokenov, overený 2026-09-11 na
-ai.google.dev/gemini-api/docs/pricing — Gemini cenník sa mení a API ho nevystavuje,
-takže pri zmene modelu/cien treba tabuľku ručne doplniť). Súhrn je rozpísaný
-per-model, keby si `GEMINI_MODEL` počas mesiaca zmenil; neznámy model v tabuľke
-ukáže tokeny bez ceny namiesto tichého nesprávneho súčtu.
+**`/tokens [YYYY-MM]`** in Telegram shows a monthly summary (current month if no
+argument) — call count, tokens, and an estimated cost in USD from
+`app/llm/pricing.py` (a hand-maintained USD/1M-token price table, verified
+2026-09-11 against ai.google.dev/gemini-api/docs/pricing — Gemini's pricing changes
+and isn't exposed via the API, so the table needs manual updates when
+models/prices change). The summary is broken down per model, in case you changed
+`GEMINI_MODEL` during the month; a model not in the table shows tokens without a
+cost instead of silently showing a wrong total.
 
 ## Persona / system instructions (`/system_prompt`)
 
-`app/llm/service.py` skladá `system_instruction` pre Gemini z **troch** vrstiev,
-per-request (`_build_config()`), nie raz pri štarte:
+`app/llm/service.py` builds Gemini's `system_instruction` from **three** layers,
+per request (`_build_config()`), not once at startup:
 
-1. **`_routing_instruction()`** — pevná, v kóde. Zaručuje, že funguje tool-routing
+1. **`_routing_instruction()`** — fixed, in code. Guarantees tool routing works
    (`insert_health_record` / `get_health_records` / `sync_garmin_day` /
-   `sync_garmin_range` / `search_scientific_studies`) a posiela modelu skutočný
-   dnešný dátum + zoznam reálne existujúcich `typ` hodnôt pre daného usera (aby
-   nehádal naslepo). Needituj bez rozmyslu, inak sa môže pokaziť tool-calling.
-2. **`_BASE_PERSONA`** — pevná, v kóde, spoločná pre všetkých používateľov: "si
-   longevity expert a coach", kombinuje dáta z viacerých zdrojov s aktuálnym
-   vedeckým výskumom cez OpenAlex (`search_scientific_studies`), pri citácii vždy
-   uvedie autora a rok. Toto uprav priamo v `service.py`, ak chceš zmeniť základný
-   charakter/expertízu bota pre všetkých naraz.
-3. **`auth_user.system_prompt`** — voľný text s tvojím osobným profilom (výška, ciele,
-   tréningový plán...), per-používateľ, uložený v DB. Nastavuje sa priamo v Telegrame:
+   `sync_garmin_range` / `search_scientific_studies` / and the rest) and sends the
+   model today's real date plus the list of `typ` values that actually exist for
+   that user (so it doesn't guess blindly). Don't edit this carelessly, or
+   tool-calling can break.
+2. **`_BASE_PERSONA`** — fixed, in code, shared across all users: "you are a
+   longevity expert and coach", combines data from multiple sources with current
+   scientific research via OpenAlex (`search_scientific_studies`), always cites the
+   author and year. Edit this directly in `service.py` if you want to change the
+   bot's base character/expertise for everyone at once.
+3. **`auth_user.system_prompt`** — free-form text with your personal profile
+   (height, goals, training plan...), per user, stored in the DB. Set directly in
+   Telegram:
 
 ```
-/system_prompt Mám 196 cm, plán je 2x posilka, 1x beh, 1x plávanie...
-/system_prompt            (bez textu - zobrazí aktuálne nastavený prompt)
-/system_prompt clear      (zmaže ho)
+/system_prompt I'm 196cm, my plan is 2x strength training, 1x running, 1x swimming...
+/system_prompt            (no text - shows the currently set prompt)
+/system_prompt clear      (clears it)
 ```
 
-Keďže sa `system_prompt` číta z DB pri každej správe, zmena sa prejaví okamžite —
-žiadny reštart appky netreba (zmena `_BASE_PERSONA`/`_routing_instruction()` reštart
-vyžaduje, keďže sú v kóde).
+Since `system_prompt` is read from the DB on every message, a change takes effect
+immediately — no app restart needed (changing `_BASE_PERSONA`/`_routing_instruction()`
+does require a restart, since those live in code).
 
-### Vedecké štúdie (`search_scientific_studies`)
+### Scientific studies (`search_scientific_studies`)
 
-Keď sa téma oplatí podložiť výskumom (spánok, HRV, regenerácia, tréningová záťaž,
-VO2 max, výživa, longevity...), model si sám odvodí kľúčové slová a zavolá OpenAlex
-API (`app/llm/studies.py`) — funguje bez API kľúča, žiadny signup ani schvaľovanie.
+When a topic is worth grounding in research (sleep, HRV, recovery, training load,
+VO2 max, nutrition, longevity...), the model derives keywords itself and calls the
+OpenAlex API (`app/llm/studies.py`) — works with no API key, no signup or approval
+needed.
 
-**Prečo OpenAlex a nie Semantic Scholar**: pôvodne bol nástroj postavený na Semantic
-Scholar, ale jeho neautentifikovaný rate limit (~100 requestov/5 min zdieľaných so
-**všetkými** neautentifikovanými volajúcimi na svete) sa v praxi ukázal ako
-nepoužiteľný — pri testovaní aj pri reálnom používaní padal takmer každý request na
-429, a vlastný API kľúč vyžaduje manuálne schválenie (komunita hlási ~5 dní čakania).
-OpenAlex je otvorená, keyless alternatíva postavená presne na tento účel — overené
-naživo 2026-09-13, funguje okamžite. Voliteľný `OPENALEX_EMAIL` v `.env` (nie API
-kľúč, len kontaktný email) zaradí requesty do "polite pool" pre spoľahlivejšiu
-službu — nevyžaduje žiadne schvaľovanie, ale nedopĺňal som ho automaticky, keďže ide
-o tvoj email a pošlú sa s ním requesty na externú službu.
+**Why OpenAlex and not Semantic Scholar**: the tool was originally built on
+Semantic Scholar, but its unauthenticated rate limit (~100 requests/5 min shared
+across **every** unauthenticated caller in the world) proved unusable in practice —
+both during testing and real use, almost every request came back 429, and getting
+your own API key requires manual approval (the community reports ~5 days of
+waiting). OpenAlex is an open, keyless alternative built exactly for this use case
+— verified live on 2026-09-13, works instantly. The optional `OPENALEX_EMAIL` in
+`.env` (not an API key, just a contact email) puts requests into the "polite pool"
+for more reliable service — no approval needed, but I didn't auto-fill it, since
+it's your email and requests go out to an external service with it.
 
-Ak OpenAlex predsa len zlyhá (výpadok, timeout), nástroj sa ticho vzdá (žiadne
-štúdie tú správu) a model to používateľovi transparentne povie namiesto vymyslenej
-citácie — to je zámer, nie chyba.
+If OpenAlex does fail (an outage, timeout), the tool quietly gives up (no studies
+for that message) and the model tells the user this transparently instead of
+inventing a citation — that's intentional, not a bug.
 
-Keďže niektoré modely (pozorované pri `gemini-3.6-flash`) vedia na širšiu otázku
-("sprav analýzu") vydať viacero paralelných tool-callov naraz (napr. 5x
-`get_health_records` s rôznymi typmi), `_dispatch_tool_calls` to podporuje priamo —
-spáruje odpovede podľa `id` volania, nie len podľa mena. Ak model chce po prvom kole
-ešte ďalšie tool cally namiesto textovej odpovede, cyklus pokračuje až do
-`_MAX_TOOL_ROUNDS` (3), potom vráti čo má, namiesto nekonečného cyklu.
+Since some models (observed with `gemini-3.6-flash`) can issue several parallel
+tool calls at once for a broad question ("run an analysis") (e.g. 5x
+`get_health_records` with different types), `_dispatch_tool_calls` supports this
+directly — it matches responses by the call's `id`, not just by name. If the model
+still wants more tool calls after the first round instead of a text reply, the
+loop continues up to `_MAX_TOOL_ROUNDS`, then forces one final text-only reply
+instead of looping forever.
 
-## Denný report (`/daily_report`)
+## Daily report (`/daily_report`)
 
-Skratka na presne tú istú otázku, akú by si mohol napísať sám — spustí sa fixný
-prompt (`_DAILY_REPORT_PROMPT` v `app/telegram/bot.py`), ktorý zhrnie včerajší deň
-naprieč **všetkými** tvojimi zaznamenanými dátami (nielen Garmin — aj váha, strava,
-prípadne glukomer, čokoľvek zapíšeš), vypichne výnimočné hodnoty s vedeckým
-vysvetlením (`search_scientific_studies`), a povie ti, či dnes trénovať naplno alebo
-poľaviť. Zatiaľ len na vyžiadanie (príkaz alebo napísať to isté vlastnými slovami) —
-automatické posielanie o 9:00 by pridalo krok do `sync_garmin_data` cronu
-(`app/scheduler.py`) volajúci `handle_user_message` s týmto promptom a poslanie
-výsledku cez `bot.send_message`, zatiaľ neimplementované.
+A shortcut for exactly the question you could ask yourself — runs a fixed prompt
+(`DAILY_REPORT_PROMPT` in `app/telegram/bot.py`) that summarizes yesterday across
+**all** of your recorded data (not just Garmin — weight, food, glucose readings,
+whatever you log), calls out any standout values with a scientific explanation
+(`search_scientific_studies`), and tells you whether to train fully today or ease
+off. Available on demand (the command, or asking the same thing in your own words),
+and also sent automatically: `app/scheduler.py`'s `send_daily_reports` job runs for
+every active user daily at 09:00, first making sure yesterday's data from every
+linked integration (Garmin, kaloricketabulky.sk nutrition, ...) is fresh via
+`app.integrations.ensure_day_synced(..., force=True)`, then generating the report
+and pushing it proactively via `bot.send_message` (see `send_message()` in
+`app/telegram/bot.py`).
 
-## Formátovanie správ (`app/telegram/formatting.py`)
+## Message formatting (`app/telegram/formatting.py`)
 
-Gemini bežne generuje markdown (`### nadpisy`, `**tučné**`, `* odrážky`, `> citácie`),
-ktorý by sa v Telegrame bez úpravy zobrazil doslovne aj so znakmi `#`/`*`. Bot beží s
-`parse_mode=HTML` a `to_telegram_html()` konvertuje markdown na Telegram HTML
-podmnožinu (nadpisy → tučné, odrážky → `•`, `> citácia` → `<blockquote>`, escapuje
-`&`/`<`/`>`). `send_reply()` (v `app/telegram/bot.py`) má fallback na čistý text, ak
-by Telegram konvertovaný HTML z akéhokoľvek dôvodu odmietol ako nevalidný — chyba vo
-formátovaní nikdy nesmie zablokovať doručenie odpovede.
+Gemini routinely generates markdown (`### headings`, `**bold**`, `* bullets`,
+`> quotes`), which Telegram would otherwise display literally, `#`/`*` characters
+and all. The bot runs with `parse_mode=HTML`, and `to_telegram_html()` converts
+markdown into Telegram's HTML subset (headings → bold, bullets → `•`, `> quote` →
+`<blockquote>`, escapes `&`/`<`/`>`). `send_reply()` (in `app/telegram/bot.py`)
+falls back to plain text if Telegram ever rejects the converted HTML as invalid for
+any reason — a formatting bug must never block a reply from being delivered.
 
 ## CI/CD — GitHub Container Registry
 
-`.github/workflows/docker-publish.yml` pri každom push do `main` postaví Docker image
-a pushne ho do GHCR ako:
+`.github/workflows/docker-publish.yml` builds a Docker image on every push to
+`main` and pushes it to GHCR as:
 
 - `ghcr.io/<owner>/<repo>:latest`
 - `ghcr.io/<owner>/<repo>:<short-sha>`
 
-Nepotrebuje žiadny extra secret — používa vstavaný `GITHUB_TOKEN` (workflow má
-explicitne `permissions: packages: write`).
+Needs no extra secret — it uses the built-in `GITHUB_TOKEN` (the workflow
+explicitly declares `permissions: packages: write`).
 
-Prvé spustenie vytvorí GHCR package naviazaný na repo, ktorý je **defaultne privátny**
-(ak je repo privátne). Na NASe potom buď:
+The first run creates a GHCR package tied to the repo, which is **private by
+default** (if the repo is private). On the NAS, then either:
 
-- nastav package na public (GitHub → repo → Packages → balík → Package settings →
-  Change visibility), a `docker pull` pôjde bez prihlásenia, alebo
-- nechaj ho privátny a na NASe sa pred pullom prihlás: `docker login ghcr.io -u
-  <github_username> -p <PAT s právom read:packages>`.
+- set the package to public (GitHub → repo → Packages → the package → Package
+  settings → Change visibility), and `docker pull` will work without logging in, or
+- leave it private and log in on the NAS before pulling: `docker login ghcr.io -u
+  <github_username> -p <PAT with read:packages scope>`.
 
-Na NASe potom stačí v `docker-compose.yml` nahradiť `build: .` za
-`image: ghcr.io/<owner>/<repo>:latest` a `docker compose pull && docker compose up -d`.
+On the NAS it's then enough to replace `build: .` with
+`image: ghcr.io/<owner>/<repo>:latest` in `docker-compose.yml` and run
+`docker compose pull && docker compose up -d`.
 
-## Poznámky k dizajnu
+## Design notes
 
-- LLM routing nemá hardcoded parser: každý text ide do Gemini s dvoma nástrojmi
-  (`insert_health_record`, `get_health_records`); bez tool-callu sa pošle priama
-  odpoveď Gemini.
-- Argumenty vrátené z function-callingu sa validujú cez Pydantic
-  (`app/llm/tools.py`) skôr, než sa zapíšu do DB — chybný/halucinovaný JSON sa
-  odchytí a používateľ dostane zrozumiteľnú spätnú väzbu namiesto pádu.
-- `health_records.data` je JSONB, takže nový `typ` záznamu nevyžaduje migráciu.
+- LLM routing has no hardcoded parser: every message goes to Gemini along with all
+  of its declared tools; without a tool call, Gemini's direct reply is sent.
+- Arguments returned from function calling are validated via Pydantic
+  (`app/llm/tools.py`) before they're written to the DB — invalid/hallucinated JSON
+  is caught and the user gets clear feedback instead of a crash.
+- `health_records.data` is JSONB, so a new record `typ` never requires a migration.

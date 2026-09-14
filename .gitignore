@@ -4,6 +4,7 @@ __pycache__/
 venv/
 .env*
 !.env.example
+docker-compose.override.yml
 .ruff_cache/
 .pytest_cache/
 *.egg-info/

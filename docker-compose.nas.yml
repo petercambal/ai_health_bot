@@ -1,0 +1,41 @@
+# For the NAS - pulls the pre-built image from GHCR instead of building locally
+# (docker-compose.yml uses `build: .`, meant for local dev). No `db` service here -
+# the NAS already has its own Postgres; see README's "Databáza" section for
+# DATABASE_URL and the one-time db/init.sql setup.
+#
+# Fronted by the NAS's own reverse proxy (DSM's built-in one, terminating TLS with
+# its Let's Encrypt cert for longevity.curlybrackets.sk) - the port below is
+# published to 127.0.0.1 only, not every interface, since the reverse proxy runs on
+# the NAS itself and nothing else should be able to reach the app directly,
+# bypassing TLS and DSM's own access controls.
+#
+# Placeholder env values below (the secrets) are safe to commit - fill in real ones
+# either directly here on the NAS (this file isn't tracked by git there) or via a
+# docker-compose.override.yml (see docker-compose.override.yml.example).
+# TELEGRAM_WEBHOOK_BASE_URL isn't a secret (it's a public domain), so it's filled in
+# for real already.
+services:
+  app:
+    image: ghcr.io/petercambal/ai_health_bot:latest
+    restart: unless-stopped
+    environment:
+      # Telegram
+      TELEGRAM_BOT_TOKEN: "123456:ABC-DEF..."
+      TELEGRAM_WEBHOOK_BASE_URL: "https://longevity.curlybrackets.sk"
+      TELEGRAM_WEBHOOK_SECRET: "change-me"
+
+      # Gemini
+      GEMINI_API_KEY: "your-gemini-api-key"
+      GEMINI_MODEL: "gemini-3.6-flash"
+
+      # Optional: courtesy contact for OpenAlex's "polite pool" (search_scientific_studies) -
+      # not an API key, works fine left blank.
+      OPENALEX_EMAIL: ""
+
+      # Existing Postgres on the NAS
+      DATABASE_URL: "postgresql://<user>:<password>@<host>:<port>/<dbname>"
+
+      # App
+      LOG_LEVEL: "INFO"
+    ports:
+      - "127.0.0.1:8124:8000"

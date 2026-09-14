@@ -1,0 +1,16 @@
+# Copy this to docker-compose.override.yml (gitignored) and fill in real values -
+# Compose automatically merges it on top of docker-compose.yml, so `environment:`
+# values here override the placeholders in the tracked base file. This keeps real
+# secrets out of git while still letting `docker compose up` (locally or on the NAS)
+# read everything from plain env vars, no .env file needed.
+services:
+  app:
+    environment:
+      TELEGRAM_BOT_TOKEN: "123456:ABC-DEF..."
+      TELEGRAM_WEBHOOK_BASE_URL: "https://your-domain.com"
+      TELEGRAM_WEBHOOK_SECRET: "change-me"
+      GEMINI_API_KEY: "your-gemini-api-key"
+      GEMINI_MODEL: "gemini-3.6-flash"
+      OPENALEX_EMAIL: ""
+      DATABASE_URL: "postgresql://<user>:<password>@<host>:<port>/<dbname>"
+      LOG_LEVEL: "INFO"
