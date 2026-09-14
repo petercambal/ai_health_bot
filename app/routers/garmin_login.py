@@ -8,7 +8,7 @@ from fastapi.templating import Jinja2Templates
 
 from app import database
 from app.garmin import web_login
-from app.garmin.link_token import verify_link_token
+from app.link_token import verify_link_token
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +16,7 @@ router = APIRouter()
 templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent.parent / "templates"))
 
 # Nobody types this URL themselves - the bot hands it out via /garmin_link, signed
-# and scoped to the requester's own telegram_id (see app/garmin/link_token.py), so
+# and scoped to the requester's own telegram_id (see app/link_token.py), so
 # there's no separate session/cookie auth layer here. Still re-checked against
 # auth_user in case access was revoked between the link being issued and used.
 

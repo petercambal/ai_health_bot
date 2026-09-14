@@ -13,7 +13,7 @@ from aiogram.types import BotCommand, Message
 
 from app import database
 from app.config import settings
-from app.garmin.link_token import generate_link_token
+from app.link_token import generate_link_token
 from app.llm import pricing as token_pricing
 from app.llm.service import handle_user_message
 from app.telegram.formatting import to_telegram_html
@@ -43,6 +43,7 @@ _COMMANDS = [
     BotCommand(command="help", description="How to use the bot"),
     BotCommand(command="daily_report", description="Get your daily health report now"),
     BotCommand(command="garmin_link", description="Link your Garmin account"),
+    BotCommand(command="nutrition_link", description="Link your kaloricketabulky.sk account"),
     BotCommand(command="system_prompt", description="View/set/clear the system prompt"),
     BotCommand(command="tokens", description="Token usage and estimated cost for a month"),
 ]
@@ -103,6 +104,19 @@ async def on_garmin_link(message: Message) -> None:
     link_token = generate_link_token(telegram_id)
     url = f"{settings.telegram_webhook_base_url.rstrip('/')}/garmin-login?token={link_token}"
     await send_reply(message, f"Link your Garmin account here (link valid for 30 minutes):\n{url}")
+
+
+@router.message(Command("nutrition_link"))
+async def on_nutrition_link(message: Message) -> None:
+    telegram_id = await _check_authorized(message)
+    if telegram_id is None:
+        return
+
+    link_token = generate_link_token(telegram_id)
+    url = f"{settings.telegram_webhook_base_url.rstrip('/')}/nutrition-login?token={link_token}"
+    await send_reply(
+        message, f"Link your kaloricketabulky.sk account here (link valid for 30 minutes):\n{url}"
+    )
 
 
 @router.message(Command("daily_report"))
@@ -219,6 +233,7 @@ async def on_help(message: Message) -> None:
         "Commands:\n"
         "/daily_report - get your daily health report now\n"
         "/garmin_link - link your Garmin account\n"
+        "/nutrition_link - link your kaloricketabulky.sk account\n"
         "/system_prompt <text> - set your assistant persona "
         "(no text shows the current one, 'clear' removes it)\n"
         "/tokens [YYYY-MM] - token usage and estimated cost for a month "

@@ -1,4 +1,4 @@
-from app.garmin.link_token import generate_link_token, verify_link_token
+from app.link_token import generate_link_token, verify_link_token
 
 
 def test_roundtrip():

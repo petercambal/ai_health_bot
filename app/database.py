@@ -215,45 +215,80 @@ async def get_last_synced_date(user_id: int, typ: str) -> date | None:
     return row["d"] if row else None
 
 
-async def get_garmin_session(user_id: int) -> str | None:
+async def get_integration_credentials(user_id: int, service: str) -> dict | None:
     pool = get_pool()
     row = await pool.fetchrow(
-        "SELECT session_json FROM garmin_account WHERE user_id = $1",
+        "SELECT credentials FROM integrations WHERE user_id = $1 AND service = $2",
         user_id,
+        service,
     )
-    return row["session_json"] if row else None
+    return row["credentials"] if row else None
 
 
-async def get_garmin_email(user_id: int) -> str | None:
-    pool = get_pool()
-    row = await pool.fetchrow(
-        "SELECT garmin_email FROM garmin_account WHERE user_id = $1",
-        user_id,
-    )
-    return row["garmin_email"] if row else None
-
-
-async def save_garmin_session(user_id: int, garmin_email: str, session_json: str) -> None:
+async def save_integration_credentials(
+    user_id: int, service: str, credentials: dict, label: str | None = None
+) -> None:
     pool = get_pool()
     await pool.execute(
         """
-        INSERT INTO garmin_account (user_id, garmin_email, session_json, updated_at)
-        VALUES ($1, $2, $3, NOW())
-        ON CONFLICT (user_id) DO UPDATE SET
-            garmin_email = EXCLUDED.garmin_email,
-            session_json = EXCLUDED.session_json,
+        INSERT INTO integrations (user_id, service, label, credentials, updated_at)
+        VALUES ($1, $2, $3, $4, NOW())
+        ON CONFLICT (user_id, service) DO UPDATE SET
+            label = EXCLUDED.label,
+            credentials = EXCLUDED.credentials,
             updated_at = NOW()
         """,
         user_id,
-        garmin_email,
-        session_json,
+        service,
+        label,
+        credentials,
+    )
+
+
+async def list_integration_users(service: str) -> list[int]:
+    pool = get_pool()
+    rows = await pool.fetch("SELECT user_id FROM integrations WHERE service = $1", service)
+    return [r["user_id"] for r in rows]
+
+
+_GARMIN_SERVICE = "garmin"
+_NUTRITION_SERVICE = "nutrition"
+
+
+async def get_garmin_session(user_id: int) -> str | None:
+    creds = await get_integration_credentials(user_id, _GARMIN_SERVICE)
+    return creds["session_json"] if creds else None
+
+
+async def get_garmin_email(user_id: int) -> str | None:
+    creds = await get_integration_credentials(user_id, _GARMIN_SERVICE)
+    return creds["email"] if creds else None
+
+
+async def save_garmin_session(user_id: int, garmin_email: str, session_json: str) -> None:
+    await save_integration_credentials(
+        user_id,
+        _GARMIN_SERVICE,
+        {"email": garmin_email, "session_json": session_json},
+        label=garmin_email,
     )
 
 
 async def list_garmin_accounts() -> list[int]:
-    pool = get_pool()
-    rows = await pool.fetch("SELECT user_id FROM garmin_account")
-    return [r["user_id"] for r in rows]
+    return await list_integration_users(_GARMIN_SERVICE)
+
+
+async def get_nutrition_cookies(user_id: int) -> dict | None:
+    creds = await get_integration_credentials(user_id, _NUTRITION_SERVICE)
+    return creds["cookies"] if creds else None
+
+
+async def save_nutrition_cookies(user_id: int, cookies: dict, label: str | None = None) -> None:
+    await save_integration_credentials(user_id, _NUTRITION_SERVICE, {"cookies": cookies}, label=label)
+
+
+async def list_nutrition_accounts() -> list[int]:
+    return await list_integration_users(_NUTRITION_SERVICE)
 
 
 async def log_token_usage(

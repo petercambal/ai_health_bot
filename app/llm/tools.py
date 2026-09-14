@@ -10,6 +10,8 @@ SYNC_GARMIN_RANGE = "sync_garmin_range"
 SEARCH_STUDIES = "search_scientific_studies"
 GET_LAST_WORKOUT = "get_last_workout"
 LOG_WORKOUT_SESSION = "log_workout_session"
+SYNC_NUTRITION_DAY = "sync_nutrition_day"
+SYNC_NUTRITION_RANGE = "sync_nutrition_range"
 
 
 class InsertHealthRecordArgs(BaseModel):
@@ -67,6 +69,19 @@ class LogWorkoutSessionArgs(BaseModel):
     variant: str = Field(..., min_length=1, max_length=100)
     ts: datetime | None = None
     cviky: list[WorkoutExerciseArgs] = Field(..., min_length=1, max_length=30)
+
+
+class SyncNutritionDayArgs(BaseModel):
+    """Validates arguments Gemini returns for the sync_nutrition_day tool call."""
+
+    date: str = Field(..., min_length=1, max_length=20)
+
+
+class SyncNutritionRangeArgs(BaseModel):
+    """Validates arguments Gemini returns for the sync_nutrition_range tool call."""
+
+    start_date: str = Field(..., min_length=1, max_length=20)
+    end_date: str = Field(..., min_length=1, max_length=20)
 
 
 def resolve_day(value: str) -> date | None:
@@ -234,6 +249,35 @@ _LOG_WORKOUT_SESSION_SCHEMA = types.Schema(
     required=["variant", "cviky"],
 )
 
+_SYNC_NUTRITION_SCHEMA = types.Schema(
+    type=types.Type.OBJECT,
+    properties={
+        "date": types.Schema(
+            type=types.Type.STRING,
+            description=(
+                "Which day to fetch from the user's kaloricketabulky.sk food diary: "
+                "'today', 'yesterday', or an ISO date YYYY-MM-DD."
+            ),
+        ),
+    },
+    required=["date"],
+)
+
+_SYNC_NUTRITION_RANGE_SCHEMA = types.Schema(
+    type=types.Type.OBJECT,
+    properties={
+        "start_date": types.Schema(
+            type=types.Type.STRING,
+            description="First day of the range: 'today', 'yesterday', or an ISO date YYYY-MM-DD.",
+        ),
+        "end_date": types.Schema(
+            type=types.Type.STRING,
+            description="Last day of the range (inclusive), same format as start_date.",
+        ),
+    },
+    required=["start_date", "end_date"],
+)
+
 GEMINI_TOOL = types.Tool(
     function_declarations=[
         types.FunctionDeclaration(
@@ -305,6 +349,25 @@ GEMINI_TOOL = types.Tool(
             ),
             parameters=_LOG_WORKOUT_SESSION_SCHEMA,
         ),
+        types.FunctionDeclaration(
+            name=SYNC_NUTRITION_DAY,
+            description=(
+                "Fetch/refresh this user's food diary from kaloricketabulky.sk (energy, "
+                "protein, carbs, fat, and the individual foods eaten) for a specific day "
+                "and store it. Call this when the user asks to sync, fetch, or refresh "
+                "their nutrition/food diary data."
+            ),
+            parameters=_SYNC_NUTRITION_SCHEMA,
+        ),
+        types.FunctionDeclaration(
+            name=SYNC_NUTRITION_RANGE,
+            description=(
+                "Fetch/refresh this user's kaloricketabulky.sk food diary for a range of "
+                "days (inclusive), up to 31 days at a time. Call this for backfilling "
+                "nutrition history longer than a single day."
+            ),
+            parameters=_SYNC_NUTRITION_RANGE_SCHEMA,
+        ),
     ]
 )
 
@@ -317,6 +380,8 @@ __all__ = [
     "SEARCH_STUDIES",
     "SYNC_GARMIN_DAY",
     "SYNC_GARMIN_RANGE",
+    "SYNC_NUTRITION_DAY",
+    "SYNC_NUTRITION_RANGE",
     "GetHealthRecordsArgs",
     "GetLastWorkoutArgs",
     "InsertHealthRecordArgs",
@@ -324,6 +389,8 @@ __all__ = [
     "SearchStudiesArgs",
     "SyncGarminDayArgs",
     "SyncGarminRangeArgs",
+    "SyncNutritionDayArgs",
+    "SyncNutritionRangeArgs",
     "ValidationError",
     "WorkoutExerciseArgs",
     "resolve_day",

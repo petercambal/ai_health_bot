@@ -5,7 +5,7 @@ from fastapi import FastAPI
 
 from app import database
 from app.config import settings
-from app.routers import dashboard, garmin_login, telegram
+from app.routers import dashboard, garmin_login, nutrition_login, telegram
 from app.scheduler import start_scheduler, stop_scheduler
 from app.telegram.bot import setup_commands, setup_webhook, teardown_webhook
 
@@ -33,6 +33,7 @@ app = FastAPI(title="Telegram Health Tracker", lifespan=lifespan)
 app.include_router(telegram.router)
 app.include_router(dashboard.router)
 app.include_router(garmin_login.router)
+app.include_router(nutrition_login.router)
 
 
 @app.get("/healthz")

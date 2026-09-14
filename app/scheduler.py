@@ -5,6 +5,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 from app import database
 from app.garmin import sync as garmin_sync
+from app.nutrition import sync as nutrition_sync
 
 logger = logging.getLogger(__name__)
 
@@ -12,8 +13,8 @@ scheduler = AsyncIOScheduler()
 
 
 async def sync_garmin_data() -> None:
-    """Catches up every user who has linked a Garmin account (garmin_account row)
-    on any days missed since their last sync, up to and including yesterday."""
+    """Catches up every user who has linked a Garmin account on any days missed
+    since their last sync, up to and including yesterday."""
     user_ids = await database.list_garmin_accounts()
     for user_id in user_ids:
         try:
@@ -23,11 +24,30 @@ async def sync_garmin_data() -> None:
             logger.exception("Garmin sync failed for user_id=%s", user_id)
 
 
+async def sync_nutrition_data() -> None:
+    """Catches up every user who has linked a kaloricketabulky.sk account on any
+    days missed since their last sync, up to and including yesterday - same shape as
+    sync_garmin_data, run alongside it so the daily digest has both sides covered."""
+    user_ids = await database.list_nutrition_accounts()
+    for user_id in user_ids:
+        try:
+            synced_days = await nutrition_sync.sync_catch_up(user_id)
+            logger.info("Nutrition sync complete for user_id=%s: %s", user_id, synced_days)
+        except Exception:
+            logger.exception("Nutrition sync failed for user_id=%s", user_id)
+
+
 def start_scheduler() -> None:
     scheduler.add_job(
         sync_garmin_data,
         trigger=CronTrigger(hour=9, minute=0),
         id="sync_garmin_data",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        sync_nutrition_data,
+        trigger=CronTrigger(hour=9, minute=0),
+        id="sync_nutrition_data",
         replace_existing=True,
     )
     scheduler.start()

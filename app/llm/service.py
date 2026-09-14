@@ -19,6 +19,8 @@ from app.llm.tools import (
     SEARCH_STUDIES,
     SYNC_GARMIN_DAY,
     SYNC_GARMIN_RANGE,
+    SYNC_NUTRITION_DAY,
+    SYNC_NUTRITION_RANGE,
     GetHealthRecordsArgs,
     GetLastWorkoutArgs,
     InsertHealthRecordArgs,
@@ -26,8 +28,12 @@ from app.llm.tools import (
     SearchStudiesArgs,
     SyncGarminDayArgs,
     SyncGarminRangeArgs,
+    SyncNutritionDayArgs,
+    SyncNutritionRangeArgs,
     resolve_day,
 )
+from app.nutrition import sync as nutrition_sync
+from app.nutrition.sync import NutritionAuthRequired
 
 # Fast-path-eligible tools: single-action calls that produce a deterministic
 # confirmation without needing the model to see/synthesize results, so they skip the
@@ -36,7 +42,14 @@ from app.llm.tools import (
 # fast-path any newly added query-style tool (e.g. search_scientific_studies) into
 # the wrong branch, where it has no case and falls through to "unknown tool".
 _FAST_PATH_TOOLS = frozenset(
-    {INSERT_HEALTH_RECORD, SYNC_GARMIN_DAY, SYNC_GARMIN_RANGE, LOG_WORKOUT_SESSION}
+    {
+        INSERT_HEALTH_RECORD,
+        SYNC_GARMIN_DAY,
+        SYNC_GARMIN_RANGE,
+        LOG_WORKOUT_SESSION,
+        SYNC_NUTRITION_DAY,
+        SYNC_NUTRITION_RANGE,
+    }
 )
 
 logger = logging.getLogger(__name__)
@@ -212,6 +225,10 @@ async def _dispatch_tool_calls(
             return await _handle_sync_garmin_range(user_id, raw_args)
         if fc.name == LOG_WORKOUT_SESSION:
             return await _handle_log_workout_session(user_id, raw_args)
+        if fc.name == SYNC_NUTRITION_DAY:
+            return await _handle_sync_nutrition(user_id, raw_args)
+        if fc.name == SYNC_NUTRITION_RANGE:
+            return await _handle_sync_nutrition_range(user_id, raw_args)
         logger.warning("Gemini called unknown tool %r (user_id=%s)", fc.name, user_id)
         return FALLBACK_ERROR_MESSAGE
 
@@ -408,6 +425,60 @@ async def _execute_for_synthesis(user_id: int, function_call: types.FunctionCall
             "failed_days": [d.isoformat() for d in sorted(failed_days)],
         }
 
+    if name == SYNC_NUTRITION_DAY:
+        try:
+            args = SyncNutritionDayArgs.model_validate(raw_args)
+        except ValidationError:
+            logger.warning(
+                "Invalid sync_nutrition_day args from Gemini (user_id=%s): %r", user_id, raw_args
+            )
+            return {"error": "invalid arguments"}
+        day = resolve_day(args.date)
+        if day is None:
+            return {"error": "could not parse date"}
+        try:
+            data = await nutrition_sync.sync_day(user_id=user_id, day=day)
+        except NutritionAuthRequired as e:
+            logger.warning("Nutrition auth required (user_id=%s): %s", user_id, e)
+            return {"error": str(e)}
+        except Exception:
+            logger.exception("Nutrition sync failed (user_id=%s, day=%s)", user_id, day)
+            return {"error": "nutrition sync failed"}
+        return {"status": "synced", "day": day.isoformat(), "data": data}
+
+    if name == SYNC_NUTRITION_RANGE:
+        try:
+            args = SyncNutritionRangeArgs.model_validate(raw_args)
+        except ValidationError:
+            logger.warning(
+                "Invalid sync_nutrition_range args from Gemini (user_id=%s): %r", user_id, raw_args
+            )
+            return {"error": "invalid arguments"}
+        start = resolve_day(args.start_date)
+        end = resolve_day(args.end_date)
+        if start is None or end is None:
+            return {"error": "could not parse dates"}
+        span_days = abs((end - start).days) + 1
+        if span_days > nutrition_sync.MAX_RANGE_DAYS:
+            return {"error": f"range too long, max {nutrition_sync.MAX_RANGE_DAYS} days at a time"}
+        try:
+            result = await nutrition_sync.sync_range(user_id=user_id, start=start, end=end)
+        except NutritionAuthRequired as e:
+            logger.warning("Nutrition auth required (user_id=%s): %s", user_id, e)
+            return {"error": str(e)}
+        except Exception:
+            logger.exception(
+                "Nutrition range sync failed (user_id=%s, start=%s, end=%s)", user_id, start, end
+            )
+            return {"error": "nutrition range sync failed"}
+        ok_days = [d for d, v in result.items() if v is not None]
+        failed_days = [d for d, v in result.items() if v is None]
+        return {
+            "synced_days": len(ok_days),
+            "total_days": len(result),
+            "failed_days": [d.isoformat() for d in sorted(failed_days)],
+        }
+
     if name == SEARCH_STUDIES:
         try:
             args = SearchStudiesArgs.model_validate(raw_args)
@@ -582,3 +653,76 @@ async def _handle_log_workout_session(user_id: int, raw_args: dict) -> str:
             "the variant and each exercise with its weight/reps."
         )
     return f"Workout saved ✅ ({args.variant}, {len(args.cviky)} cvikov)"
+
+
+async def _handle_sync_nutrition(user_id: int, raw_args: dict) -> str:
+    try:
+        args = SyncNutritionDayArgs.model_validate(raw_args)
+    except ValidationError:
+        logger.warning(
+            "Invalid sync_nutrition_day args from Gemini (user_id=%s): %r", user_id, raw_args
+        )
+        return (
+            "I wasn't sure which day to fetch nutrition data for. Try e.g. "
+            "'yesterday' or a date in YYYY-MM-DD format."
+        )
+
+    day = resolve_day(args.date)
+    if day is None:
+        return "I didn't understand the date. Try e.g. 'today', 'yesterday', or YYYY-MM-DD."
+
+    try:
+        data = await nutrition_sync.sync_day(user_id=user_id, day=day)
+    except NutritionAuthRequired as e:
+        logger.warning("Nutrition auth required (user_id=%s): %s", user_id, e)
+        return str(e)
+    except Exception:
+        logger.exception("Nutrition sync failed (user_id=%s, day=%s)", user_id, day)
+        return FALLBACK_ERROR_MESSAGE
+
+    return f"Nutrition diary for {day.isoformat()} fetched and saved ✅ ({data['energy_kcal']} kcal)"
+
+
+async def _handle_sync_nutrition_range(user_id: int, raw_args: dict) -> str:
+    try:
+        args = SyncNutritionRangeArgs.model_validate(raw_args)
+    except ValidationError:
+        logger.warning(
+            "Invalid sync_nutrition_range args from Gemini (user_id=%s): %r", user_id, raw_args
+        )
+        return (
+            "I wasn't sure about the date range. Try e.g. 'from 2026-08-01 to "
+            "2026-08-31' or 'last week'."
+        )
+
+    start = resolve_day(args.start_date)
+    end = resolve_day(args.end_date)
+    if start is None or end is None:
+        return "I didn't understand the dates. Try e.g. 'today', 'yesterday', or YYYY-MM-DD."
+
+    span_days = abs((end - start).days) + 1
+    if span_days > nutrition_sync.MAX_RANGE_DAYS:
+        return (
+            f"A {span_days}-day range is too long, the max is {nutrition_sync.MAX_RANGE_DAYS} "
+            "days at a time. Try splitting it into shorter periods."
+        )
+
+    try:
+        result = await nutrition_sync.sync_range(user_id=user_id, start=start, end=end)
+    except NutritionAuthRequired as e:
+        logger.warning("Nutrition auth required (user_id=%s): %s", user_id, e)
+        return str(e)
+    except Exception:
+        logger.exception(
+            "Nutrition range sync failed (user_id=%s, start=%s, end=%s)", user_id, start, end
+        )
+        return FALLBACK_ERROR_MESSAGE
+
+    ok_days = [d for d, v in result.items() if v is not None]
+    failed_days = [d for d, v in result.items() if v is None]
+
+    summary = f"Nutrition data fetched: {len(ok_days)}/{len(result)} days ({start.isoformat()} - {end.isoformat()}) ✅"
+    if failed_days:
+        failed_str = ", ".join(d.isoformat() for d in sorted(failed_days))
+        summary += f"\nFailed: {failed_str}"
+    return summary

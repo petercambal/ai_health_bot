@@ -39,17 +39,45 @@ BEGIN
     END IF;
 END $$;
 
--- One row per Telegram user who has linked a Garmin account. session_json is the
--- garminconnect client's serialized token (dumps()/loads()) - never the password,
--- which is only ever held in memory during the one-time interactive bootstrap login
--- (see app/garmin/bootstrap.py). This is what lets sync run unattended (cron, or a
--- Telegram-triggered request) without ever storing a Garmin password anywhere.
+-- Superseded by health_tracker.integrations below (one generic table for every
+-- linked external service, not one table per service) - kept here only so an
+-- existing deployment's table isn't dropped out from under it. No app code
+-- reads/writes this anymore; see the migration note above the integrations table.
 CREATE TABLE IF NOT EXISTS health_tracker.garmin_account (
     user_id BIGINT PRIMARY KEY REFERENCES health_tracker.auth_user (telegram_id) ON DELETE CASCADE,
     garmin_email TEXT NOT NULL,
     session_json TEXT NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- One row per (user, linked external service) - Garmin, kaloricketabulky.sk, and
+-- whatever comes next all share this table rather than getting their own
+-- account/session table each, since the app is meant to grow more sources over time
+-- and a scheduler that wants "every linked account across every service" would
+-- otherwise have to UNION a growing list of tables. `credentials` holds whatever a
+-- given service's sync code needs to authenticate (a Garmin session token, a cookie
+-- jar for kaloricketabulky.sk, etc.) - never a plaintext password. `label` is just
+-- for human-readable display (e.g. the linked account's email).
+CREATE TABLE IF NOT EXISTS health_tracker.integrations (
+    user_id BIGINT NOT NULL REFERENCES health_tracker.auth_user (telegram_id) ON DELETE CASCADE,
+    service TEXT NOT NULL,
+    label TEXT,
+    credentials JSONB NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (user_id, service)
+);
+
+-- One-time backfill from the old garmin_account table (safe to re-run - ON CONFLICT
+-- DO NOTHING skips rows already migrated).
+INSERT INTO health_tracker.integrations (user_id, service, label, credentials, updated_at)
+SELECT
+    user_id,
+    'garmin',
+    garmin_email,
+    jsonb_build_object('email', garmin_email, 'session_json', session_json),
+    updated_at
+FROM health_tracker.garmin_account
+ON CONFLICT (user_id, service) DO NOTHING;
 
 -- One row per Gemini API call (a single Telegram message can trigger two - the
 -- initial call, and a follow-up when get_health_records feeds data back to the
