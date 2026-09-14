@@ -17,6 +17,11 @@
 services:
   app:
     image: ghcr.io/petercambal/ai_health_bot:latest
+    # Compose's default pull_policy ("missing") only pulls when the image isn't
+    # present locally at all - a plain `up -d` would keep reusing whatever :latest
+    # was cached, even after a new one is pushed to GHCR. "always" makes it check
+    # (and re-pull if the digest changed) on every `up`/`pull`.
+    pull_policy: always
     restart: unless-stopped
     environment:
       # Telegram
