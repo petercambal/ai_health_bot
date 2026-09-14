@@ -61,6 +61,12 @@ async def is_authorized_user(telegram_id: int) -> bool:
     return row is not None
 
 
+async def list_active_users() -> list[int]:
+    pool = get_pool()
+    rows = await pool.fetch("SELECT telegram_id FROM auth_user WHERE is_active = TRUE")
+    return [r["telegram_id"] for r in rows]
+
+
 async def add_auth_user(telegram_id: int, display_name: str | None = None) -> None:
     pool = get_pool()
     await pool.execute(

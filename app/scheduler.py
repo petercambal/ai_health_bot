@@ -1,11 +1,15 @@
 import logging
+from datetime import UTC, datetime, timedelta
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from app import database
 from app.garmin import sync as garmin_sync
+from app.integrations import ensure_day_synced
+from app.llm.service import handle_user_message
 from app.nutrition import sync as nutrition_sync
+from app.telegram.bot import DAILY_REPORT_PROMPT, send_message
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +41,24 @@ async def sync_nutrition_data() -> None:
             logger.exception("Nutrition sync failed for user_id=%s", user_id)
 
 
+async def send_daily_reports() -> None:
+    """Proactively pushes the /daily_report content to every active user each
+    morning. force=True on the sync so the report reflects same-day corrections
+    (e.g. a food diary entry edited after the regular catch-up sync already ran),
+    not just whatever was already cached - unlike a manually-triggered /daily_report,
+    which uses force=False since the user is asking right now, not hours later."""
+    yesterday = datetime.now(UTC).date() - timedelta(days=1)
+    user_ids = await database.list_active_users()
+    for user_id in user_ids:
+        try:
+            await ensure_day_synced(user_id, yesterday, force=True)
+            reply = await handle_user_message(user_id=user_id, text=DAILY_REPORT_PROMPT)
+            await send_message(user_id, reply)
+            logger.info("Daily report sent for user_id=%s", user_id)
+        except Exception:
+            logger.exception("Daily report push failed for user_id=%s", user_id)
+
+
 def start_scheduler() -> None:
     scheduler.add_job(
         sync_garmin_data,
@@ -48,6 +70,12 @@ def start_scheduler() -> None:
         sync_nutrition_data,
         trigger=CronTrigger(hour=9, minute=0),
         id="sync_nutrition_data",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        send_daily_reports,
+        trigger=CronTrigger(hour=9, minute=0),
+        id="send_daily_reports",
         replace_existing=True,
     )
     scheduler.start()

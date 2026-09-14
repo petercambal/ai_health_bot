@@ -31,7 +31,7 @@ _MONTH_ARG_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
 # The bot always replies in the language the user wrote in (see
 # app/llm/service.py's routing instruction), so this Slovak prompt just makes /daily_report
 # a shortcut for typing it out - no need for it to match the UI's own (English) language.
-_DAILY_REPORT_PROMPT = (
+DAILY_REPORT_PROMPT = (
     "Dobré ráno! Zhrň mi včerajší deň na základe všetkých mojich zaznamenaných dát "
     "(nielen Garmin - aj váha, strava, prípadne glukomer, čokoľvek mám zapísané). Ak "
     "tam bola nejaká výnimočná hodnota (peak alebo naopak zlá/nízka hodnota), vypichni "
@@ -73,6 +73,18 @@ async def send_reply(message: Message, text: str) -> None:
     except TelegramBadRequest:
         logger.warning("Telegram rejected HTML-formatted reply, falling back to plain text")
         await message.answer(text, parse_mode=None)
+
+
+async def send_message(user_id: int, text: str) -> None:
+    """Proactively sends `text` to a user outside of any incoming message (e.g. the
+    scheduled daily report push) - same HTML-formatting-with-fallback behavior as
+    send_reply, just addressed by chat_id instead of replying to a Message. A Telegram
+    user's private chat id is the same as their user id."""
+    try:
+        await bot.send_message(user_id, to_telegram_html(text))
+    except TelegramBadRequest:
+        logger.warning("Telegram rejected HTML-formatted push, falling back to plain text")
+        await bot.send_message(user_id, text, parse_mode=None)
 
 
 @asynccontextmanager
@@ -129,7 +141,7 @@ async def on_daily_report(message: Message) -> None:
     yesterday = datetime.now(UTC).date() - timedelta(days=1)
     async with _typing_indicator(message.chat.id):
         await ensure_day_synced(telegram_id, yesterday)
-        reply = await handle_user_message(user_id=telegram_id, text=_DAILY_REPORT_PROMPT)
+        reply = await handle_user_message(user_id=telegram_id, text=DAILY_REPORT_PROMPT)
     await send_reply(message, reply)
 
 
